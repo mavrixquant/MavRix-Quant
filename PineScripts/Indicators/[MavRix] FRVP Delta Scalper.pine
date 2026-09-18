@@ -1,154 +1,132 @@
-//@version=5
-indicator("[MavRix] FRVP Delta Scalper", overlay=true, max_lines_count=500, max_labels_count=500)
+//@version=6
+indicator('[MavRix] FRVP Delta Scalper', overlay = true, max_lines_count = 500, max_labels_count = 500)
 
 //=============================================================================
 // INTERNAL STYLE CONSTANTS
 //=============================================================================
-vahColor       = color.new(#2962FF, 0)
-pocColor       = color.new(#FFB300, 0)
-valColor       = color.new(#2962FF, 0)
-lineWidth      = 1
+vahColor = color.new(#2962FF, 0)
+pocColor = color.new(#FFB300, 0)
+valColor = color.new(#2962FF, 0)
+lineWidth = 1
 
 entryLineColor = color.new(#D1D4DC, 0)
-slLineColor    = color.new(#FF1744, 0)
-tpLineColor    = color.new(#00E676, 0)
-slBackground   = color.new(#FF1744, 90)
-tpBackground   = color.new(#00E676, 90)
+slLineColor = color.new(#FF1744, 0)
+tpLineColor = color.new(#00E676, 0)
+slBackground = color.new(#FF1744, 90)
+tpBackground = color.new(#00E676, 90)
 tradeLineWidth = 1
 
 //=============================================================================
 // ⚙ FRVP SETTINGS
 //=============================================================================
-vaPercent    = input.float(70.0, title="Value Area Volume %", minval=10.0, maxval=100.0, group="⚙ FRVP Settings", tooltip="Percentage of total volume contained in the Value Area")
-ltfTimeframe = input.timeframe("1", title="Precision Timeframe (LTF Data)", group="⚙ FRVP Settings", tooltip="Lower timeframe for accurate volume distribution. Must be < chart timeframe.")
-targetRows   = input.int(100, title="Target Row Count", minval=10, maxval=500, group="⚙ FRVP Settings", tooltip="Number of price rows in the volume profile")
+vaPercent = input.float(70.0, title = 'Value Area Volume %', minval = 10.0, maxval = 100.0, group = '⚙ FRVP Settings', tooltip = 'Percentage of total volume contained in the Value Area')
+ltfTimeframe = input.timeframe('1', title = 'Precision Timeframe (LTF Data)', group = '⚙ FRVP Settings', tooltip = 'Lower timeframe for accurate volume distribution. Must be < chart timeframe.')
+targetRows = input.int(100, title = 'Target Row Count', minval = 10, maxval = 500, group = '⚙ FRVP Settings', tooltip = 'Number of price rows in the volume profile')
 
 //=============================================================================
 // 🎯 TRADE SETTINGS
 //=============================================================================
-entryType = input.string("Strict", title="Entry Type", group="🎯 Trade Settings",
-     options=["Normal", "Strict"],
-     tooltip="Normal: enter at POC regardless of current price. Strict: only enter if POC is on the correct side of current price.")
+entryType = input.string('Strict', title = 'Entry Type', group = '🎯 Trade Settings', options = ['Normal', 'Strict'], tooltip = 'Normal: enter at POC regardless of current price. Strict: only enter if POC is on the correct side of current price.')
 
-entryMode = input.string("Only One", title="Entry Mode", group="🎯 Trade Settings",
-     options=["Only One", "Multiple"],
-     tooltip="Only One: prevents a new trade while one is pending or open. Multiple: allow concurrent trades.")
+entryMode = input.string('Only One', title = 'Entry Mode', group = '🎯 Trade Settings', options = ['Only One', 'Multiple'], tooltip = 'Only One: prevents a new trade while one is pending or open. Multiple: allow concurrent trades.')
 
-slDistance         = input.float(12.5, title="SL Distance (Points)",         group="🎯 Trade Settings", minval=0.25, step=0.25)
-tpRR               = input.float(1.0,  title="Take Profit R:R",              group="🎯 Trade Settings", minval=0.1,  step=0.1)
-limitExpiryCandles = input.int(30,     title="Cancel Limit After N Candles", group="🎯 Trade Settings", minval=1, maxval=50)
+slDistance = input.float(12.5, title = 'SL Distance (Points)', group = '🎯 Trade Settings', minval = 0.25, step = 0.25)
+tpRR = input.float(1.0, title = 'Take Profit R:R', group = '🎯 Trade Settings', minval = 0.1, step = 0.1)
+limitExpiryCandles = input.int(30, title = 'Cancel Limit After N Candles', group = '🎯 Trade Settings', minval = 1, maxval = 50)
 
 //--- Visibility toggles ---
-showFRVP       = input.bool(false, title="Show FRVP",                  group="🎯 Trade Settings", tooltip="Draw VAH / POC / VAL lines on every reversal")
-showPosition   = input.bool(true,  title="Show Position on Chart",     group="🎯 Trade Settings", tooltip="Draw entry / SL / TP lines and zones once a trade is filled")
-showTradeStats = input.bool(true,  title="Show Trade Stats On Chart",  group="🎯 Trade Settings", tooltip="Always display Entry / SL / TP / R:R label next to each filled trade. Off = minimal arrow (tooltip still works on hover).")
+showFRVP = input.bool(false, title = 'Show FRVP', group = '🎯 Trade Settings', tooltip = 'Draw VAH / POC / VAL lines on every reversal')
+showPosition = input.bool(true, title = 'Show Position on Chart', group = '🎯 Trade Settings', tooltip = 'Draw entry / SL / TP lines and zones once a trade is filled')
+showTradeStats = input.bool(true, title = 'Show Trade Stats On Chart', group = '🎯 Trade Settings', tooltip = 'Always display Entry / SL / TP / R:R label next to each filled trade. Off = minimal arrow (tooltip still works on hover).')
 
-strictEntry    = entryType == "Strict"
-oneEntryAtTime = entryMode == "Only One"
+strictEntry = entryType == 'Strict'
+oneEntryAtTime = entryMode == 'Only One'
 
 //=============================================================================
 // 🛡 BREAK-EVEN
 //=============================================================================
-beAfterOppositeEntry = input.bool(false,  title="Move SL to BE After Opposite Entry", group="🛡 Break-Even", tooltip="Move SL to BE when opposite-direction signal fires")
-beAfterR             = input.bool(false, title="Move SL to BE After Specific R",     group="🛡 Break-Even", tooltip="Move stop loss to entry price after reaching a target R multiple")
-beTriggerR           = input.float(1.0,  title="BE Trigger R",                       group="🛡 Break-Even", minval=0.1, step=0.1)
+beAfterOppositeEntry = input.bool(false, title = 'Move SL to BE After Opposite Entry', group = '🛡 Break-Even', tooltip = 'Move SL to BE when opposite-direction signal fires')
+beAfterR = input.bool(false, title = 'Move SL to BE After Specific R', group = '🛡 Break-Even', tooltip = 'Move stop loss to entry price after reaching a target R multiple')
+beTriggerR = input.float(1.0, title = 'BE Trigger R', group = '🛡 Break-Even', minval = 0.1, step = 0.1)
 
 //=============================================================================
 // 📈 TREND FILTER
 //=============================================================================
-trendFilterMethod = input.string("Session VWAP", title="Trend Filter Method", group="📈 Trend Filter",
-     options=["None", "Session VWAP", "EMA", "CVD", "CVD + EMA", "VWAP + EMA", "Supertrend", "Donchian Midpoint"],
-     tooltip="Reference used to gate trade entries. 'None' disables filtering.")
+trendFilterMethod = input.string('Session VWAP', title = 'Trend Filter Method', group = '📈 Trend Filter', options = ['None', 'Session VWAP', 'EMA', 'CVD', 'CVD + EMA', 'VWAP + EMA', 'Supertrend', 'Donchian Midpoint'], tooltip = 'Reference used to gate trade entries. \'None\' disables filtering.')
 
-trendBiasMode = input.string("Both", title="Trend Bias", group="📈 Trend Filter",
-     options=["Both", "Long Only", "Short Only"],
-     tooltip="Restricts the direction of trades allowed to open.")
+trendBiasMode = input.string('Both', title = 'Trend Bias', group = '📈 Trend Filter', options = ['Both', 'Long Only', 'Short Only'], tooltip = 'Restricts the direction of trades allowed to open.')
 
-emaTrendLen = input.int(100, title="EMA Length", group="📈 Trend Filter", minval=1,
-     tooltip="Used by the 'EMA' and 'VWAP + EMA' methods")
+emaTrendLen = input.int(100, title = 'EMA Length', group = '📈 Trend Filter', minval = 1, tooltip = 'Used by the \'EMA\' and \'VWAP + EMA\' methods')
 
-cvdEmaLen = input.int(20, title="CVD EMA Length", group="📈 Trend Filter", minval=1,
-     tooltip="Used by the 'CVD + EMA' method")
+cvdEmaLen = input.int(20, title = 'CVD EMA Length', group = '📈 Trend Filter', minval = 1, tooltip = 'Used by the \'CVD + EMA\' method')
 
-stAtrLen = input.int(10,    title="Supertrend ATR Length", group="📈 Trend Filter", minval=1)
-stFactor = input.float(3.0, title="Supertrend Factor",     group="📈 Trend Filter", minval=0.5, step=0.5)
+stAtrLen = input.int(10, title = 'Supertrend ATR Length', group = '📈 Trend Filter', minval = 1)
+stFactor = input.float(3.0, title = 'Supertrend Factor', group = '📈 Trend Filter', minval = 0.5, step = 0.5)
 
-donchianLen = input.int(20, title="Donchian Length", group="📈 Trend Filter", minval=1,
-     tooltip="Used by the 'Donchian Midpoint' method")
+donchianLen = input.int(20, title = 'Donchian Length', group = '📈 Trend Filter', minval = 1, tooltip = 'Used by the \'Donchian Midpoint\' method')
 
 //=============================================================================
 // 🕐 TRADING WINDOWS
 //=============================================================================
-enableWindows = input.bool(true, title="Enable Trading Windows", group="🕐 Trading Windows",
-     tooltip="When ON, trades are only allowed inside the enabled session windows below. When OFF, all signals are tradeable.")
+enableWindows = input.bool(true, title = 'Enable Trading Windows', group = '🕐 Trading Windows', tooltip = 'When ON, trades are only allowed inside the enabled session windows below. When OFF, all signals are tradeable.')
 
-londonEnabled = input.bool(true, title="London Window",   group="🕐 Trading Windows", inline="london")
-londonSession = input.session("0200-1100", title="",      group="🕐 Trading Windows", inline="london",
-     tooltip="London session — 02:00 to 11:00 (chart timezone)")
-londonBgColor = input.color(color.new(#2196F3, 90), title="", group="🕐 Trading Windows", inline="london",
-     tooltip="Background colour for London window (set to 100% transparency to hide)")
+londonEnabled = input.bool(true, title = 'London Window', group = '🕐 Trading Windows', inline = 'london')
+londonSession = input.session('0200-1100', title = '', group = '🕐 Trading Windows', inline = 'london', tooltip = 'London session — 02:00 to 11:00 (chart timezone)')
+londonBgColor = input.color(color.new(#2196F3, 90), title = '', group = '🕐 Trading Windows', inline = 'london', tooltip = 'Background colour for London window (set to 100% transparency to hide)')
 
-nyEnabled     = input.bool(false, title="New York Window", group="🕐 Trading Windows", inline="ny")
-nySession     = input.session("0900-1100", title="",      group="🕐 Trading Windows", inline="ny",
-     tooltip="New York session — 09:00 to 11:00 (chart timezone)")
-nyBgColor     = input.color(color.new(#FF9800, 90), title="", group="🕐 Trading Windows", inline="ny",
-     tooltip="Background colour for New York window (set to 100% transparency to hide)")
+nyEnabled = input.bool(false, title = 'New York Window', group = '🕐 Trading Windows', inline = 'ny')
+nySession = input.session('0900-1100', title = '', group = '🕐 Trading Windows', inline = 'ny', tooltip = 'New York session — 09:00 to 11:00 (chart timezone)')
+nyBgColor = input.color(color.new(#FF9800, 90), title = '', group = '🕐 Trading Windows', inline = 'ny', tooltip = 'Background colour for New York window (set to 100% transparency to hide)')
 
 //=============================================================================
 // 🛑 DAILY LIMITS
 //=============================================================================
-enableDailyTradeLimit = input.bool(false, title="Daily Trade Limit",  group="🛑 Daily Limits", inline="dtl",
-     tooltip="Stop creating new trades once this many trades have been opened today.")
-dailyTradeLimit       = input.int(10,   title="",                    group="🛑 Daily Limits", inline="dtl", minval=1)
+enableDailyTradeLimit = input.bool(false, title = 'Daily Trade Limit', group = '🛑 Daily Limits', inline = 'dtl', tooltip = 'Stop creating new trades once this many trades have been opened today.')
+dailyTradeLimit = input.int(10, title = '', group = '🛑 Daily Limits', inline = 'dtl', minval = 1)
 
-enableDailyProfitRLimit = input.bool(false, title="Daily Profit R Limit", group="🛑 Daily Limits", inline="dpl",
-     tooltip="Stop creating new trades once NET R for today reaches +this value.")
-dailyProfitRLimit       = input.float(5.0, title="",                     group="🛑 Daily Limits", inline="dpl", minval=0.1, step=0.1)
+enableDailyProfitRLimit = input.bool(false, title = 'Daily Profit R Limit', group = '🛑 Daily Limits', inline = 'dpl', tooltip = 'Stop creating new trades once NET R for today reaches +this value.')
+dailyProfitRLimit = input.float(5.0, title = '', group = '🛑 Daily Limits', inline = 'dpl', minval = 0.1, step = 0.1)
 
-enableDailyLossRLimit = input.bool(false, title="Daily Loss R Limit", group="🛑 Daily Limits", inline="dll",
-     tooltip="Stop creating new trades once NET R for today reaches −this value.")
-dailyLossRLimit       = input.float(2.0,  title="",                  group="🛑 Daily Limits", inline="dll", minval=0.1, step=0.1)
+enableDailyLossRLimit = input.bool(false, title = 'Daily Loss R Limit', group = '🛑 Daily Limits', inline = 'dll', tooltip = 'Stop creating new trades once NET R for today reaches −this value.')
+dailyLossRLimit = input.float(2.0, title = '', group = '🛑 Daily Limits', inline = 'dll', minval = 0.1, step = 0.1)
 
 //=============================================================================
 // ⚡ ACTIONS
 //=============================================================================
-resetTrade = input.bool(false, title="Reset All Trades", group="⚡ Actions")
+resetTrade = input.bool(false, title = 'Reset All Trades', group = '⚡ Actions')
 
 
-showTable = input.bool(true, title="Show Table", group="⚡ Actions", inline="tbl")
+showTable = input.bool(true, title = 'Show Table', group = '⚡ Actions', inline = 'tbl')
 
-tablePosInput = input.string("Right Top", title="", group="⚡ Actions", inline="tbl",
-     options=["Right Top", "Right Center", "Right Bottom", "Left Top", "Left Center", "Left Bottom"],
-     tooltip="Where to place the trade statistics table")
+tablePosInput = input.string('Right Top', title = '', group = '⚡ Actions', inline = 'tbl', options = ['Right Top', 'Right Center', 'Right Bottom', 'Left Top', 'Left Center', 'Left Bottom'], tooltip = 'Where to place the trade statistics table')
 
-tablePosition = tablePosInput == "Right Top" ? position.top_right : tablePosInput == "Right Center" ? position.middle_right : tablePosInput == "Right Bottom" ? position.bottom_right : tablePosInput == "Left Top" ? position.top_left : tablePosInput == "Left Center" ? position.middle_left : position.bottom_left
+tablePosition = tablePosInput == 'Right Top' ? position.top_right : tablePosInput == 'Right Center' ? position.middle_right : tablePosInput == 'Right Bottom' ? position.bottom_right : tablePosInput == 'Left Top' ? position.top_left : tablePosInput == 'Left Center' ? position.middle_left : position.bottom_left
 
 //=============================================================================
 // 📡 TRADE LOGGER
 //=============================================================================
 
-dumpAllTradesNow = input.bool(false, title="📤 LOG ALL TRADES", group="📡 TRADE LOGGER",
-     tooltip="Turn ON to Log all your trades so the Scraper can get the Trades.")
+dumpAllTradesNow = input.bool(false, title = '📤 LOG ALL TRADES', group = '📡 TRADE LOGGER', tooltip = 'Turn ON to Log all your trades so the Scraper can get the Trades.')
 
-    
+
 //=============================================================================
 // TRADING WINDOW FILTER
 //=============================================================================
-inLondon    = londonEnabled and not na(time(timeframe.period, londonSession))
-inNewYork   = nyEnabled     and not na(time(timeframe.period, nySession))
+inLondon = londonEnabled and not na(time(timeframe.period, londonSession))
+inNewYork = nyEnabled and not na(time(timeframe.period, nySession))
 inAnyWindow = inLondon or inNewYork
 
 inTradingWindow = not enableWindows or inAnyWindow
 
-bgcolor(inLondon  ? londonBgColor : na, title="London Window BG")
-bgcolor(inNewYork ? nyBgColor     : na, title="New York Window BG")
+bgcolor(inLondon ? londonBgColor : na, title = 'London Window BG')
+bgcolor(inNewYork ? nyBgColor : na, title = 'New York Window BG')
 
 //=============================================================================
 // DELTA
 //=============================================================================
-upVol   = close > open ? volume : close == open ? volume / 2 : 0
+upVol = close > open ? volume : close == open ? volume / 2 : 0
 downVol = close < open ? volume : close == open ? volume / 2 : 0
-delta   = upVol - downVol
+delta = upVol - downVol
 
 //=============================================================================
 // CONSECUTIVE DELTA COUNTERS
@@ -157,40 +135,45 @@ var int pos_d_count = 0
 var int neg_d_count = 0
 
 if delta > 0
-    pos_d_count += 1
+    pos_d_count := pos_d_count + 1
     neg_d_count := 0
+    neg_d_count
 else if delta < 0
-    neg_d_count += 1
+    neg_d_count := neg_d_count + 1
     pos_d_count := 0
+    pos_d_count
 else
     pos_d_count := 0
     neg_d_count := 0
+    neg_d_count
 
 //=============================================================================
 // BASE REVERSAL SIGNALS
 //=============================================================================
 baseShortSignal = (neg_d_count[1] == 4 or neg_d_count[1] == 5) and delta > 0
-baseLongSignal  = (pos_d_count[1] == 4 or pos_d_count[1] == 5) and delta < 0
+baseLongSignal = (pos_d_count[1] == 4 or pos_d_count[1] == 5) and delta < 0
 
 //=============================================================================
 // LOWER TIMEFRAME DATA
 //=============================================================================
-ltfHigh   = request.security_lower_tf(syminfo.tickerid, ltfTimeframe, high)
-ltfLow    = request.security_lower_tf(syminfo.tickerid, ltfTimeframe, low)
+ltfHigh = request.security_lower_tf(syminfo.tickerid, ltfTimeframe, high)
+ltfLow = request.security_lower_tf(syminfo.tickerid, ltfTimeframe, low)
 ltfVolume = request.security_lower_tf(syminfo.tickerid, ltfTimeframe, volume)
 
 //=============================================================================
 // TREND FILTER COMPUTATIONS
 //=============================================================================
 vwapValue = ta.vwap(hlc3)
-emaTrend  = ta.ema(close, emaTrendLen)
+emaTrend = ta.ema(close, emaTrendLen)
 
-newSession = ta.change(time("D")) != 0
+newSession = ta.change(time('D')) != 0
 var float cvdCum = 0.0
 if newSession
     cvdCum := delta
+    cvdCum
 else
     cvdCum := nz(cvdCum[1], 0.0) + delta
+    cvdCum
 cvdEma = ta.ema(cvdCum, cvdEmaLen)
 
 [stLine, stRawDir] = ta.supertrend(stFactor, stAtrLen)
@@ -200,49 +183,57 @@ donchianMid = (ta.highest(high, donchianLen) + ta.lowest(low, donchianLen)) / 2.
 
 float trendDir = 0.0
 
-if trendFilterMethod == "Session VWAP"
+if trendFilterMethod == 'Session VWAP'
     trendDir := close > vwapValue ? 1 : close < vwapValue ? -1 : 0
-else if trendFilterMethod == "EMA"
+    trendDir
+else if trendFilterMethod == 'EMA'
     trendDir := close > emaTrend ? 1 : close < emaTrend ? -1 : 0
-else if trendFilterMethod == "CVD"
+    trendDir
+else if trendFilterMethod == 'CVD'
     trendDir := cvdCum > 0 ? 1 : cvdCum < 0 ? -1 : 0
-else if trendFilterMethod == "CVD + EMA"
+    trendDir
+else if trendFilterMethod == 'CVD + EMA'
     trendDir := cvdCum > cvdEma ? 1 : cvdCum < cvdEma ? -1 : 0
-else if trendFilterMethod == "VWAP + EMA"
+    trendDir
+else if trendFilterMethod == 'VWAP + EMA'
     bool vwapEmaBull = close > vwapValue and close > emaTrend
     bool vwapEmaBear = close < vwapValue and close < emaTrend
     trendDir := vwapEmaBull ? 1 : vwapEmaBear ? -1 : 0
-else if trendFilterMethod == "Supertrend"
+    trendDir
+else if trendFilterMethod == 'Supertrend'
     trendDir := stDir
-else if trendFilterMethod == "Donchian Midpoint"
+    trendDir
+else if trendFilterMethod == 'Donchian Midpoint'
     trendDir := close > donchianMid ? 1 : close < donchianMid ? -1 : 0
+    trendDir
 
-bool trendAllowsLong  = trendFilterMethod == "None" or trendDir == 1
-bool trendAllowsShort = trendFilterMethod == "None" or trendDir == -1
-bool biasAllowsLong   = trendBiasMode != "Short Only"
-bool biasAllowsShort  = trendBiasMode != "Long Only"
+bool trendAllowsLong = trendFilterMethod == 'None' or trendDir == 1
+bool trendAllowsShort = trendFilterMethod == 'None' or trendDir == -1
+bool biasAllowsLong = trendBiasMode != 'Short Only'
+bool biasAllowsShort = trendBiasMode != 'Long Only'
 
 //=============================================================================
 // DAILY LIMIT COUNTERS  —  NET R ACCOUNTING
 //=============================================================================
-var int   dailyTradesCount = 0
-var float netDailyR        = 0.0
+var int dailyTradesCount = 0
+var float netDailyR = 0.0
 
 if newSession
     dailyTradesCount := 0
-    netDailyR        := 0.0
+    netDailyR := 0.0
+    netDailyR
 
-bool tradeLimitHit  = enableDailyTradeLimit   and dailyTradesCount >= dailyTradeLimit
-bool profitLimitHit = enableDailyProfitRLimit and netDailyR >=  dailyProfitRLimit
-bool lossLimitHit   = enableDailyLossRLimit   and netDailyR <= -dailyLossRLimit
+bool tradeLimitHit = enableDailyTradeLimit and dailyTradesCount >= dailyTradeLimit
+bool profitLimitHit = enableDailyProfitRLimit and netDailyR >= dailyProfitRLimit
+bool lossLimitHit = enableDailyLossRLimit and netDailyR <= -dailyLossRLimit
 
-bool dailyLimitsAllowNewTrade = not (tradeLimitHit or profitLimitHit or lossLimitHit)
+bool dailyLimitsAllowNewTrade = not(tradeLimitHit or profitLimitHit or lossLimitHit)
 
 //=============================================================================
 // TRADE SIGNALS
 //=============================================================================
 tradeShortSignal = baseShortSignal and trendAllowsShort and biasAllowsShort and inTradingWindow and dailyLimitsAllowNewTrade
-tradeLongSignal  = baseLongSignal  and trendAllowsLong  and biasAllowsLong  and inTradingWindow and dailyLimitsAllowNewTrade
+tradeLongSignal = baseLongSignal and trendAllowsLong and biasAllowsLong and inTradingWindow and dailyLimitsAllowNewTrade
 
 //=============================================================================
 // DRAWING ARRAYS
@@ -254,37 +245,37 @@ var array<line> valLines = array.new_line()
 //=============================================================================
 // TRADE STATE ARRAYS
 //=============================================================================
-var array<int>   tradeDirection  = array.new_int()
-var array<int>   tradeStatus     = array.new_int()
-var array<float> tradeEntry      = array.new_float()
-var array<float> tradeSL         = array.new_float()
-var array<float> tradeTP         = array.new_float()
-var array<float> tradeOriginalSL = array.new_float()   // SL at creation (never moved by BE)
-var array<int>   tradeSignalBar  = array.new_int()
-var array<int>   tradeEntryBar   = array.new_int()
-var array<int>   tradeExitBar    = array.new_int()
-var array<int>   tradeEntryTime  = array.new_int()
-var array<int>   tradeExitTime   = array.new_int()
-var array<float> tradeResultR    = array.new_float()
-var array<bool>  tradeMovedToBE  = array.new_bool()
-var array<float> tradeMFE        = array.new_float()   // MFE in points
-var array<bool>  tradeMFEActive  = array.new_bool()    // true while MFE still tracking
+var array<int> tradeDirection = array.new_int()
+var array<int> tradeStatus = array.new_int()
+var array<float> tradeEntry = array.new_float()
+var array<float> tradeSL = array.new_float()
+var array<float> tradeTP = array.new_float()
+var array<float> tradeOriginalSL = array.new_float() // SL at creation (never moved by BE)
+var array<int> tradeSignalBar = array.new_int()
+var array<int> tradeEntryBar = array.new_int()
+var array<int> tradeExitBar = array.new_int()
+var array<int> tradeEntryTime = array.new_int()
+var array<int> tradeExitTime = array.new_int()
+var array<float> tradeResultR = array.new_float()
+var array<bool> tradeMovedToBE = array.new_bool()
+var array<float> tradeMFE = array.new_float() // MFE in points
+var array<bool> tradeMFEActive = array.new_bool() // true while MFE still tracking
 
-var array<int>   tradeSignalTime  = array.new_int()
+var array<int> tradeSignalTime = array.new_int()
 var array<label> tradeEntryLabels = array.new_label()
 
 var array<line> tradeEntryLines = array.new_line()
-var array<line> tradeSLLines    = array.new_line()
-var array<line> tradeTPLines    = array.new_line()
-var array<box>  tradeSLBoxes    = array.new_box()
-var array<box>  tradeTPBoxes    = array.new_box()
+var array<line> tradeSLLines = array.new_line()
+var array<line> tradeTPLines = array.new_line()
+var array<box> tradeSLBoxes = array.new_box()
+var array<box> tradeTPBoxes = array.new_box()
 
 //=============================================================================
 // MFE DAILY RESET — stop MFE tracking at new session boundary
 //=============================================================================
 if newSession
     if array.size(tradeMFEActive) > 0
-        for i = 0 to array.size(tradeMFEActive) - 1
+        for i = 0 to array.size(tradeMFEActive) - 1 by 1
             array.set(tradeMFEActive, i, false)
 
 //=============================================================================
@@ -292,47 +283,33 @@ if newSession
 //=============================================================================
 // Compact visible text shown when showTradeStats is ON
 buildCompactText(int dir, float entry, float sl, float tp, bool isBE, int status, float resR, float mfe) =>
-    string head = dir == 1 ? "🟢 LONG" : "🔴 SHORT"
-    string tail = status == 2 ? "   →  +" + str.tostring(resR, "#.##") + "R" :
-                  status == 3 ? "   →  "  + str.tostring(resR, "#.##") + "R" : ""
-    float riskPts   = math.abs(entry - sl)
+    string head = dir == 1 ? '🟢 LONG' : '🔴 SHORT'
+    string tail = status == 2 ? '   →  +' + str.tostring(resR, '#.##') + 'R' : status == 3 ? '   →  ' + str.tostring(resR, '#.##') + 'R' : ''
+    float riskPts = math.abs(entry - sl)
     float rewardPts = math.abs(tp - entry)
-    float rr        = riskPts > 0 ? rewardPts / riskPts : 0.0
-    string slTag    = isBE ? " (BE)" : ""
-    string txt = head + tail +
-      "\nE    " + str.tostring(entry, format.mintick) +
-      "\nSL   " + str.tostring(sl,    format.mintick) + slTag +
-      "\nTP   " + str.tostring(tp,    format.mintick) +
-      "\nR:R  1 : " + str.tostring(rr, "#.##")
+    float rr = riskPts > 0 ? rewardPts / riskPts : 0.0
+    string slTag = isBE ? ' (BE)' : ''
+    string txt = head + tail + '\nE    ' + str.tostring(entry, format.mintick) + '\nSL   ' + str.tostring(sl, format.mintick) + slTag + '\nTP   ' + str.tostring(tp, format.mintick) + '\nR:R  1 : ' + str.tostring(rr, '#.##')
     if mfe > 0
-        txt += "\nMFE  " + str.tostring(mfe, "#.##") + " pts"
+        txt := txt + '\nMFE  ' + str.tostring(mfe, '#.##') + ' pts'
+        txt
     txt
 
 // Full rich tooltip (still shown on hover)
 buildTooltip(int dir, float entry, float sl, float tp, bool isBE, int status, int sigTime, int entTime, int exTime, float resR, float mfe) =>
-    string dirStr    = dir == 1 ? "🟢 LONG" : "🔴 SHORT"
-    float  riskPts   = math.abs(entry - sl)
-    float  rewardPts = math.abs(tp - entry)
-    float  rr        = riskPts > 0 ? rewardPts / riskPts : 0.0
-    string statusStr = status == 0 ? "PENDING" : status == 1 ? (isBE ? "ACTIVE (BE)" : "ACTIVE") : status == 2 ? "TP HIT" : status == 3 ? "SL HIT" : "CANCELLED"
-    string body      = "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                       "  " + dirStr + "\n" +
-                       "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                       "  Entry        " + str.tostring(entry, format.mintick) + "\n" +
-                       "  Stop Loss    " + str.tostring(sl,    format.mintick) + "   (" + (dir == 1 ? "−" : "+") + str.tostring(riskPts,   "#.##") + " pts)\n" +
-                       "  Take Profit  " + str.tostring(tp,    format.mintick) + "   (" + (dir == 1 ? "+" : "−") + str.tostring(rewardPts, "#.##") + " pts)\n" +
-                       "  R : R        1 : " + str.tostring(rr, "#.##") + "\n" +
-                       "  Risk         " + str.tostring(riskPts,   "#.##") + " pts  (= 1.00 R)\n" +
-                       "  Reward       " + str.tostring(rewardPts, "#.##") + " pts  (= " + str.tostring(rr, "#.##") + " R)\n" +
-                       "  Status       " + statusStr + "\n" +
-                       "━━━━━━━━━━━━━━━━━━━━━━━━━━\n" +
-                       "  Signal Time   " + str.format_time(sigTime, "yyyy-MM-dd HH:mm", syminfo.timezone) + "\n" +
-                       "  Entry Time    " + str.format_time(entTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
+    string dirStr = dir == 1 ? '🟢 LONG' : '🔴 SHORT'
+    float riskPts = math.abs(entry - sl)
+    float rewardPts = math.abs(tp - entry)
+    float rr = riskPts > 0 ? rewardPts / riskPts : 0.0
+    string statusStr = status == 0 ? 'PENDING' : status == 1 ? isBE ? 'ACTIVE (BE)' : 'ACTIVE' : status == 2 ? 'TP HIT' : status == 3 ? 'SL HIT' : 'CANCELLED'
+    string body = '━━━━━━━━━━━━━━━━━━━━━━\n' + '  ' + dirStr + '\n' + '━━━━━━━━━━━━━━━━━━━━━━\n' + '  Entry        ' + str.tostring(entry, format.mintick) + '\n' + '  Stop Loss    ' + str.tostring(sl, format.mintick) + '   (' + (dir == 1 ? '−' : '+') + str.tostring(riskPts, '#.##') + ' pts)\n' + '  Take Profit  ' + str.tostring(tp, format.mintick) + '   (' + (dir == 1 ? '+' : '−') + str.tostring(rewardPts, '#.##') + ' pts)\n' + '  R : R        1 : ' + str.tostring(rr, '#.##') + '\n' + '  Risk         ' + str.tostring(riskPts, '#.##') + ' pts  (= 1.00 R)\n' + '  Reward       ' + str.tostring(rewardPts, '#.##') + ' pts  (= ' + str.tostring(rr, '#.##') + ' R)\n' + '  Status       ' + statusStr + '\n' + '━━━━━━━━━━━━━━━━━━━━━━\n' + '  Signal Time   ' + str.format_time(sigTime, 'yyyy-MM-dd HH:mm', syminfo.timezone) + '\n' + '  Entry Time    ' + str.format_time(entTime, 'yyyy-MM-dd HH:mm', syminfo.timezone)
     if status == 2 or status == 3
-        body += "\n  Exit Time     " + str.format_time(exTime, "yyyy-MM-dd HH:mm", syminfo.timezone)
-        body += "\n  Result        " + (resR >= 0 ? "+" : "") + str.tostring(resR, "#.##") + " R"
+        body := body + '\n  Exit Time     ' + str.format_time(exTime, 'yyyy-MM-dd HH:mm', syminfo.timezone)
+        body := body + '\n  Result        ' + (resR >= 0 ? '+' : '') + str.tostring(resR, '#.##') + ' R'
+        body
     if mfe > 0
-        body += "\n  MFE           " + str.tostring(mfe, "#.##") + " pts  (max move in favour until SL / EOD)"
+        body := body + '\n  MFE           ' + str.tostring(mfe, '#.##') + ' pts  (max move in favour until SL / EOD)'
+        body
     body
 
 //=============================================================================
@@ -342,31 +319,31 @@ bool resetNow = resetTrade and not resetTrade[1]
 
 if resetNow
     if array.size(vahLines) > 0
-        for i = 0 to array.size(vahLines) - 1
+        for i = 0 to array.size(vahLines) - 1 by 1
             line.delete(array.get(vahLines, i))
     if array.size(pocLines) > 0
-        for i = 0 to array.size(pocLines) - 1
+        for i = 0 to array.size(pocLines) - 1 by 1
             line.delete(array.get(pocLines, i))
     if array.size(valLines) > 0
-        for i = 0 to array.size(valLines) - 1
+        for i = 0 to array.size(valLines) - 1 by 1
             line.delete(array.get(valLines, i))
     if array.size(tradeEntryLines) > 0
-        for i = 0 to array.size(tradeEntryLines) - 1
+        for i = 0 to array.size(tradeEntryLines) - 1 by 1
             line.delete(array.get(tradeEntryLines, i))
     if array.size(tradeSLLines) > 0
-        for i = 0 to array.size(tradeSLLines) - 1
+        for i = 0 to array.size(tradeSLLines) - 1 by 1
             line.delete(array.get(tradeSLLines, i))
     if array.size(tradeTPLines) > 0
-        for i = 0 to array.size(tradeTPLines) - 1
+        for i = 0 to array.size(tradeTPLines) - 1 by 1
             line.delete(array.get(tradeTPLines, i))
     if array.size(tradeSLBoxes) > 0
-        for i = 0 to array.size(tradeSLBoxes) - 1
+        for i = 0 to array.size(tradeSLBoxes) - 1 by 1
             box.delete(array.get(tradeSLBoxes, i))
     if array.size(tradeTPBoxes) > 0
-        for i = 0 to array.size(tradeTPBoxes) - 1
+        for i = 0 to array.size(tradeTPBoxes) - 1 by 1
             box.delete(array.get(tradeTPBoxes, i))
     if array.size(tradeEntryLabels) > 0
-        for i = 0 to array.size(tradeEntryLabels) - 1
+        for i = 0 to array.size(tradeEntryLabels) - 1 by 1
             label.delete(array.get(tradeEntryLabels, i))
 
     array.clear(vahLines)
@@ -395,8 +372,9 @@ if resetNow
     array.clear(tradeTPBoxes)
     array.clear(tradeEntryLabels)
 
-    netDailyR        := 0.0
+    netDailyR := 0.0
     dailyTradesCount := 0
+    dailyTradesCount
 
 //=============================================================================
 // VOLUME DISTRIBUTION HELPER
@@ -409,15 +387,15 @@ distributeRange(bins, rangeLow, rangeHigh, vol, baseLow, step, rows) =>
             array.set(bins, row, array.get(bins, row) + vol)
         else
             int firstRow = int(math.floor((rangeLow - baseLow) / step))
-            int lastRow  = int(math.floor((rangeHigh - baseLow) / step))
+            int lastRow = int(math.floor((rangeHigh - baseLow) / step))
             firstRow := int(math.max(0, math.min(rows - 1, firstRow)))
-            lastRow  := int(math.max(0, math.min(rows - 1, lastRow)))
+            lastRow := int(math.max(0, math.min(rows - 1, lastRow)))
             if lastRow >= firstRow
                 float rangeSize = rangeHigh - rangeLow
-                for row = firstRow to lastRow
-                    float rowLow    = baseLow + row * step
-                    float rowHigh   = rowLow + step
-                    float overlap   = math.min(rangeHigh, rowHigh) - math.max(rangeLow, rowLow)
+                for row = firstRow to lastRow by 1
+                    float rowLow = baseLow + row * step
+                    float rowHigh = rowLow + step
+                    float overlap = math.min(rangeHigh, rowHigh) - math.max(rangeLow, rowLow)
                     if overlap > 0
                         float rowVolume = vol * overlap / rangeSize
                         array.set(bins, row, array.get(bins, row) + rowVolume)
@@ -427,41 +405,42 @@ distributeRange(bins, rangeLow, rangeHigh, vol, baseLow, step, rows) =>
 //=============================================================================
 if baseShortSignal or baseLongSignal
 
-    int streakLen   = baseShortSignal ? neg_d_count[1] : pos_d_count[1]
+    int streakLen = baseShortSignal ? neg_d_count[1] : pos_d_count[1]
     int startBarIdx = bar_index - streakLen
-    int endBarIdx   = bar_index - 1
+    int endBarIdx = bar_index - 1
 
     float streakHigh = high[1]
-    float streakLow  = low[1]
-    for i = 1 to streakLen
+    float streakLow = low[1]
+    for i = 1 to streakLen by 1
         streakHigh := math.max(streakHigh, high[i])
-        streakLow  := math.min(streakLow,  low[i])
+        streakLow := math.min(streakLow, low[i])
+        streakLow
 
-    float rawStep    = (streakHigh - streakLow) / targetRows
-    float stepTicks  = math.max(1.0, math.round(rawStep / syminfo.mintick))
-    float stepSize   = stepTicks * syminfo.mintick
-    int   actualRows = int(math.ceil((streakHigh - streakLow) / stepSize))
+    float rawStep = (streakHigh - streakLow) / targetRows
+    float stepTicks = math.max(1.0, math.round(rawStep / syminfo.mintick))
+    float stepSize = stepTicks * syminfo.mintick
+    int actualRows = int(math.ceil((streakHigh - streakLow) / stepSize))
     actualRows := int(math.max(1, actualRows))
 
     if stepSize > 0 and actualRows > 0
 
-        float[] binVolume       = array.new_float(actualRows, 0.0)
-        float   totalStreakVolume = 0.0
+        array<float> binVolume = array.new_float(actualRows, 0.0)
+        float totalStreakVolume = 0.0
 
-        for offset = 1 to streakLen
+        for offset = 1 to streakLen by 1
 
-            float[] subHols = ltfHigh[offset]
-            float[] subLows = ltfLow[offset]
-            float[] subVols = ltfVolume[offset]
+            array<float> subHols = ltfHigh[offset]
+            array<float> subLows = ltfLow[offset]
+            array<float> subVols = ltfVolume[offset]
 
             if array.size(subVols) > 0
-                for k = 0 to array.size(subVols) - 1
+                for k = 0 to array.size(subVols) - 1 by 1
 
                     float subH = array.get(subHols, k)
                     float subL = array.get(subLows, k)
                     float subV = array.get(subVols, k)
 
-                    totalStreakVolume += subV
+                    totalStreakVolume := totalStreakVolume + subV
 
                     int loBin = int(math.floor((subL - streakLow) / stepSize))
                     int hiBin = int(math.floor((subH - streakLow) / stepSize))
@@ -471,63 +450,66 @@ if baseShortSignal or baseLongSignal
                     int span = hiBin - loBin + 1
                     if span > 0
                         float volPerBin = subV / span
-                        for b = loBin to hiBin
+                        for b = loBin to hiBin by 1
                             array.set(binVolume, b, array.get(binVolume, b) + volPerBin)
 
-        int   pocIndex  = 0
+        int pocIndex = 0
         float maxBinVol = array.get(binVolume, 0)
 
         if actualRows > 1
-            for b = 1 to actualRows - 1
+            for b = 1 to actualRows - 1 by 1
                 float v = array.get(binVolume, b)
                 if v > maxBinVol
                     maxBinVol := v
-                    pocIndex  := b
+                    pocIndex := b
+                    pocIndex
 
-        float targetVaVol  = totalStreakVolume * (vaPercent / 100.0)
+        float targetVaVol = totalStreakVolume * (vaPercent / 100.0)
         float currentVaVol = maxBinVol
-        int   upperBin     = pocIndex
-        int   lowerBin     = pocIndex
+        int upperBin = pocIndex
+        int lowerBin = pocIndex
 
         while currentVaVol < targetVaVol and (upperBin < actualRows - 1 or lowerBin > 0)
 
-            float volUp   = upperBin < actualRows - 1 ? array.get(binVolume, upperBin + 1) : 0.0
-            float volDown = lowerBin > 0               ? array.get(binVolume, lowerBin - 1) : 0.0
+            float volUp = upperBin < actualRows - 1 ? array.get(binVolume, upperBin + 1) : 0.0
+            float volDown = lowerBin > 0 ? array.get(binVolume, lowerBin - 1) : 0.0
 
             if upperBin < actualRows - 1 and (volUp >= volDown or lowerBin == 0)
-                upperBin     += 1
-                currentVaVol += volUp
+                upperBin := upperBin + 1
+                currentVaVol := currentVaVol + volUp
+                currentVaVol
             else if lowerBin > 0
-                lowerBin     -= 1
-                currentVaVol += volDown
+                lowerBin := lowerBin - 1
+                currentVaVol := currentVaVol + volDown
+                currentVaVol
 
-        float vahPrice = streakLow + ((upperBin + 1) * stepSize)
-        float pocPrice = streakLow + (pocIndex * stepSize) + (stepSize / 2.0)
-        float valPrice = streakLow + (lowerBin * stepSize)
+        float vahPrice = streakLow + (upperBin + 1) * stepSize
+        float pocPrice = streakLow + pocIndex * stepSize + stepSize / 2.0
+        float valPrice = streakLow + lowerBin * stepSize
 
         if showFRVP
-            array.push(vahLines, line.new(startBarIdx, vahPrice, endBarIdx, vahPrice, color=vahColor, width=lineWidth))
-            array.push(pocLines, line.new(startBarIdx, pocPrice, endBarIdx, pocPrice, color=pocColor, width=lineWidth))
-            array.push(valLines, line.new(startBarIdx, valPrice, endBarIdx, valPrice, color=valColor, width=lineWidth))
+            array.push(vahLines, line.new(startBarIdx, vahPrice, endBarIdx, vahPrice, color = vahColor, width = lineWidth))
+            array.push(pocLines, line.new(startBarIdx, pocPrice, endBarIdx, pocPrice, color = pocColor, width = lineWidth))
+            array.push(valLines, line.new(startBarIdx, valPrice, endBarIdx, valPrice, color = valColor, width = lineWidth))
 
         bool hasExistingTrade = false
         if array.size(tradeStatus) > 0
-            for existingIndex = 0 to array.size(tradeStatus) - 1
+            for existingIndex = 0 to array.size(tradeStatus) - 1 by 1
                 int existingStatus = array.get(tradeStatus, existingIndex)
                 if existingStatus == 0 or existingStatus == 1
                     hasExistingTrade := true
                     break
 
-        bool longEntryAllowed  = not strictEntry or pocPrice < close
+        bool longEntryAllowed = not strictEntry or pocPrice < close
         bool shortEntryAllowed = not strictEntry or pocPrice > close
-        bool canCreateTrade    = (not oneEntryAtTime or not hasExistingTrade) and dailyLimitsAllowNewTrade
+        bool canCreateTrade = (not oneEntryAtTime or not hasExistingTrade) and dailyLimitsAllowNewTrade
 
         if tradeShortSignal and shortEntryAllowed and canCreateTrade
             array.push(tradeDirection, -1)
             array.push(tradeStatus, 0)
             array.push(tradeEntry, pocPrice)
             array.push(tradeSL, pocPrice + slDistance)
-            array.push(tradeTP, pocPrice - (slDistance * tpRR))
+            array.push(tradeTP, pocPrice - slDistance * tpRR)
             array.push(tradeOriginalSL, pocPrice + slDistance)
             array.push(tradeSignalBar, bar_index)
             array.push(tradeEntryBar, -1)
@@ -545,14 +527,15 @@ if baseShortSignal or baseLongSignal
             array.push(tradeSLBoxes, na)
             array.push(tradeTPBoxes, na)
             array.push(tradeEntryLabels, na)
-            dailyTradesCount += 1
+            dailyTradesCount := dailyTradesCount + 1
+            dailyTradesCount
 
         else if tradeLongSignal and longEntryAllowed and canCreateTrade
             array.push(tradeDirection, 1)
             array.push(tradeStatus, 0)
             array.push(tradeEntry, pocPrice)
             array.push(tradeSL, pocPrice - slDistance)
-            array.push(tradeTP, pocPrice + (slDistance * tpRR))
+            array.push(tradeTP, pocPrice + slDistance * tpRR)
             array.push(tradeOriginalSL, pocPrice - slDistance)
             array.push(tradeSignalBar, bar_index)
             array.push(tradeEntryBar, -1)
@@ -570,90 +553,82 @@ if baseShortSignal or baseLongSignal
             array.push(tradeSLBoxes, na)
             array.push(tradeTPBoxes, na)
             array.push(tradeEntryLabels, na)
-            dailyTradesCount += 1
+            dailyTradesCount := dailyTradesCount + 1
+            dailyTradesCount
 
 //=============================================================================
 // PROCESS PENDING TRADES
 //=============================================================================
 if array.size(tradeStatus) > 0
 
-    for i = 0 to array.size(tradeStatus) - 1
+    for i = 0 to array.size(tradeStatus) - 1 by 1
 
-        int   status    = array.get(tradeStatus, i)
-        int   direction = array.get(tradeDirection, i)
-        float ePrice    = array.get(tradeEntry, i)
-        float sPrice    = array.get(tradeSL, i)
-        float tPrice    = array.get(tradeTP, i)
-        int   signalBar = array.get(tradeSignalBar, i)
+        int status = array.get(tradeStatus, i)
+        int direction = array.get(tradeDirection, i)
+        float ePrice = array.get(tradeEntry, i)
+        float sPrice = array.get(tradeSL, i)
+        float tPrice = array.get(tradeTP, i)
+        int signalBar = array.get(tradeSignalBar, i)
 
         if status == 0
 
-            int  candlesWaiting = bar_index - signalBar
-            bool entryFilled    = bar_index > signalBar and (direction == 1 ? low <= ePrice : high >= ePrice)
-            bool limitExpired   = candlesWaiting > limitExpiryCandles and not entryFilled
+            int candlesWaiting = bar_index - signalBar
+            bool entryFilled = bar_index > signalBar and (direction == 1 ? low <= ePrice : high >= ePrice)
+            bool limitExpired = candlesWaiting > limitExpiryCandles and not entryFilled
 
             if entryFilled
                 array.set(tradeStatus, i, 1)
                 array.set(tradeEntryBar, i, bar_index)
                 array.set(tradeEntryTime, i, time)
-                array.set(tradeMFEActive, i, true)   // begin MFE tracking
+                array.set(tradeMFEActive, i, true) // begin MFE tracking
 
-                line  newEntryLine  = na
-                line  newSLLine     = na
-                line  newTPLine     = na
-                box   newSLBox      = na
-                box   newTPBox      = na
+                line newEntryLine = na
+                line newSLLine = na
+                line newTPLine = na
+                box newSLBox = na
+                box newTPBox = na
                 label newEntryLabel = na
 
                 if showPosition
-                    newEntryLine := line.new(bar_index, ePrice, bar_index, ePrice, color=entryLineColor, width=tradeLineWidth)
-                    newSLLine    := line.new(bar_index, sPrice, bar_index, sPrice, color=slLineColor,    width=tradeLineWidth)
-                    newTPLine    := line.new(bar_index, tPrice, bar_index, tPrice, color=tpLineColor,    width=tradeLineWidth)
-                    newSLBox     := direction == 1 ? box.new(bar_index, ePrice, bar_index, sPrice, bgcolor=slBackground, border_color=na) : box.new(bar_index, sPrice, bar_index, ePrice, bgcolor=slBackground, border_color=na)
-                    newTPBox     := direction == 1 ? box.new(bar_index, tPrice, bar_index, ePrice, bgcolor=tpBackground, border_color=na) : box.new(bar_index, ePrice, bar_index, tPrice, bgcolor=tpBackground, border_color=na)
+                    newEntryLine := line.new(bar_index, ePrice, bar_index, ePrice, color = entryLineColor, width = tradeLineWidth)
+                    newSLLine := line.new(bar_index, sPrice, bar_index, sPrice, color = slLineColor, width = tradeLineWidth)
+                    newTPLine := line.new(bar_index, tPrice, bar_index, tPrice, color = tpLineColor, width = tradeLineWidth)
+                    newSLBox := direction == 1 ? box.new(bar_index, ePrice, bar_index, sPrice, bgcolor = slBackground, border_color = na) : box.new(bar_index, sPrice, bar_index, ePrice, bgcolor = slBackground, border_color = na)
+                    newTPBox := direction == 1 ? box.new(bar_index, tPrice, bar_index, ePrice, bgcolor = tpBackground, border_color = na) : box.new(bar_index, ePrice, bar_index, tPrice, bgcolor = tpBackground, border_color = na)
 
-                    int    sigT   = array.get(tradeSignalTime, i)
+                    int sigT = array.get(tradeSignalTime, i)
                     string tipTxt = buildTooltip(direction, ePrice, sPrice, tPrice, false, 1, sigT, time, 0, na, 0.0)
 
                     if showTradeStats
-                        newEntryLabel := label.new(bar_index, ePrice,
-                             text      = buildCompactText(direction, ePrice, sPrice, tPrice, false, 1, na, 0.0),
-                             style     = direction == 1 ? label.style_label_up : label.style_label_down,
-                             color     = direction == 1 ? color.new(#00E676, 85) : color.new(#FF1744, 85),
-                             textcolor = direction == 1 ? color.new(#00E676, 0)  : color.new(#FF1744, 0),
-                             size      = size.small,
-                             tooltip   = tipTxt)
+                        newEntryLabel := label.new(x = bar_index + 3, y = ePrice, text = buildCompactText(direction, ePrice, sPrice, tPrice, false, 1, na, 0.0), xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = direction == 1 ? color.new(#00E676, 0) : color.new(#FF1744, 0), textalign = text.align_left, size = size.small, tooltip = tipTxt)
+                        newEntryLabel
                     else
-                        newEntryLabel := label.new(bar_index, ePrice,
-                             text      = direction == 1 ? "▲" : "▼",
-                             style     = label.style_none,
-                             textcolor = direction == 1 ? color.new(#00E676, 0) : color.new(#FF1744, 0),
-                             size      = size.tiny,
-                             tooltip   = tipTxt)
+                        newEntryLabel := label.new(x = bar_index + 3, y = ePrice, text = direction == 1 ? '▲' : '▼', xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = direction == 1 ? color.new(#00E676, 0) : color.new(#FF1744, 0), textalign = text.align_left, size = size.tiny, tooltip = tipTxt)
+                        newEntryLabel
 
                 array.set(tradeEntryLines, i, newEntryLine)
-                array.set(tradeSLLines,    i, newSLLine)
-                array.set(tradeTPLines,    i, newTPLine)
-                array.set(tradeSLBoxes,    i, newSLBox)
-                array.set(tradeTPBoxes,    i, newTPBox)
+                array.set(tradeSLLines, i, newSLLine)
+                array.set(tradeTPLines, i, newTPLine)
+                array.set(tradeSLBoxes, i, newSLBox)
+                array.set(tradeTPBoxes, i, newTPBox)
                 array.set(tradeEntryLabels, i, newEntryLabel)
 
                 // Opposite entry → move existing opposite trade to BE
                 if beAfterOppositeEntry and array.size(tradeStatus) > 1
-                    for j = 0 to array.size(tradeStatus) - 1
+                    for j = 0 to array.size(tradeStatus) - 1 by 1
                         if j != i
-                            int otherStatus    = array.get(tradeStatus, j)
+                            int otherStatus = array.get(tradeStatus, j)
                             int otherDirection = array.get(tradeDirection, j)
                             if otherStatus == 1 and otherDirection == -direction
-                                float otherEntry     = array.get(tradeEntry, j)
-                                bool  otherAlreadyBE = array.get(tradeMovedToBE, j)
+                                float otherEntry = array.get(tradeEntry, j)
+                                bool otherAlreadyBE = array.get(tradeMovedToBE, j)
                                 if not otherAlreadyBE
                                     array.set(tradeSL, j, otherEntry)
                                     array.set(tradeMovedToBE, j, true)
 
-                                    line  otherSLLine = array.get(tradeSLLines, j)
-                                    box   otherSLBox  = array.get(tradeSLBoxes, j)
-                                    label otherLbl    = array.get(tradeEntryLabels, j)
+                                    line otherSLLine = array.get(tradeSLLines, j)
+                                    box otherSLBox = array.get(tradeSLBoxes, j)
+                                    label otherLbl = array.get(tradeEntryLabels, j)
 
                                     if not na(otherSLLine)
                                         line.set_y1(otherSLLine, otherEntry)
@@ -663,10 +638,10 @@ if array.size(tradeStatus) > 0
                                         box.set_bottom(otherSLBox, otherEntry)
 
                                     if not na(otherLbl)
-                                        float otherTP    = array.get(tradeTP, j)
-                                        int   otherSig   = array.get(tradeSignalTime, j)
-                                        int   otherEnt   = array.get(tradeEntryTime, j)
-                                        float otherMfe   = array.get(tradeMFE, j)
+                                        float otherTP = array.get(tradeTP, j)
+                                        int otherSig = array.get(tradeSignalTime, j)
+                                        int otherEnt = array.get(tradeEntryTime, j)
+                                        float otherMfe = array.get(tradeMFE, j)
                                         label.set_tooltip(otherLbl, buildTooltip(otherDirection, otherEntry, otherEntry, otherTP, true, 1, otherSig, otherEnt, 0, na, otherMfe))
                                         if showTradeStats
                                             label.set_text(otherLbl, buildCompactText(otherDirection, otherEntry, otherEntry, otherTP, true, 1, na, otherMfe))
@@ -683,15 +658,15 @@ if array.size(tradeStatus) > 0
 // and stops when the trade's ORIGINAL SL level is touched or a new day starts.
 //=============================================================================
 if array.size(tradeStatus) > 0
-    for i = 0 to array.size(tradeStatus) - 1
+    for i = 0 to array.size(tradeStatus) - 1 by 1
         if array.get(tradeMFEActive, i)
 
-            int   eBar      = array.get(tradeEntryBar, i)
-            int   direction = array.get(tradeDirection, i)
-            float ePrice    = array.get(tradeEntry, i)
-            float origSL    = array.get(tradeOriginalSL, i)
-            float curMFE    = array.get(tradeMFE, i)
-            bool  changed   = false
+            int eBar = array.get(tradeEntryBar, i)
+            int direction = array.get(tradeDirection, i)
+            float ePrice = array.get(tradeEntry, i)
+            float origSL = array.get(tradeOriginalSL, i)
+            float curMFE = array.get(tradeMFE, i)
+            bool changed = false
 
             if eBar >= 0 and bar_index >= eBar
                 // Update MFE with this bar's favourable excursion from entry
@@ -700,6 +675,7 @@ if array.size(tradeStatus) > 0
                     curMFE := fav
                     array.set(tradeMFE, i, curMFE)
                     changed := true
+                    changed
 
                 // Stop MFE tracking if original SL is touched
                 bool origSLHit = direction == 1 ? low <= origSL : high >= origSL
@@ -710,14 +686,14 @@ if array.size(tradeStatus) > 0
             if changed
                 label lbl = array.get(tradeEntryLabels, i)
                 if not na(lbl)
-                    int   status  = array.get(tradeStatus, i)
-                    float sPrice  = array.get(tradeSL, i)
-                    float tPrice  = array.get(tradeTP, i)
-                    float resR    = array.get(tradeResultR, i)
-                    int   sigT    = array.get(tradeSignalTime, i)
-                    int   entT    = array.get(tradeEntryTime, i)
-                    int   exT     = array.get(tradeExitTime, i)
-                    bool  movedBE = array.get(tradeMovedToBE, i)
+                    int status = array.get(tradeStatus, i)
+                    float sPrice = array.get(tradeSL, i)
+                    float tPrice = array.get(tradeTP, i)
+                    float resR = array.get(tradeResultR, i)
+                    int sigT = array.get(tradeSignalTime, i)
+                    int entT = array.get(tradeEntryTime, i)
+                    int exT = array.get(tradeExitTime, i)
+                    bool movedBE = array.get(tradeMovedToBE, i)
 
                     if showTradeStats
                         label.set_text(lbl, buildCompactText(direction, ePrice, sPrice, tPrice, movedBE, status, resR, curMFE))
@@ -728,33 +704,33 @@ if array.size(tradeStatus) > 0
 //=============================================================================
 if array.size(tradeStatus) > 0
 
-    for i = 0 to array.size(tradeStatus) - 1
+    for i = 0 to array.size(tradeStatus) - 1 by 1
 
         int status = array.get(tradeStatus, i)
 
         if status == 1
 
-            int   direction  = array.get(tradeDirection, i)
-            float ePrice     = array.get(tradeEntry, i)
-            float sPrice     = array.get(tradeSL, i)
-            float tPrice     = array.get(tradeTP, i)
-            int   eBar       = array.get(tradeEntryBar, i)
-            bool  movedToBE  = array.get(tradeMovedToBE, i)
+            int direction = array.get(tradeDirection, i)
+            float ePrice = array.get(tradeEntry, i)
+            float sPrice = array.get(tradeSL, i)
+            float tPrice = array.get(tradeTP, i)
+            int eBar = array.get(tradeEntryBar, i)
+            bool movedToBE = array.get(tradeMovedToBE, i)
 
-            line  activeEntryLine = array.get(tradeEntryLines, i)
-            line  activeSLLine    = array.get(tradeSLLines, i)
-            line  activeTPLine    = array.get(tradeTPLines, i)
-            box   activeSLBox     = array.get(tradeSLBoxes, i)
-            box   activeTPBox     = array.get(tradeTPBoxes, i)
-            label activeLabel     = array.get(tradeEntryLabels, i)
+            line activeEntryLine = array.get(tradeEntryLines, i)
+            line activeSLLine = array.get(tradeSLLines, i)
+            line activeTPLine = array.get(tradeTPLines, i)
+            box activeSLBox = array.get(tradeSLBoxes, i)
+            box activeTPBox = array.get(tradeTPBoxes, i)
+            label activeLabel = array.get(tradeEntryLabels, i)
 
             if beAfterR and not movedToBE and bar_index > eBar
-                float beTriggerPrice   = direction == 1 ? ePrice + (slDistance * beTriggerR) : ePrice - (slDistance * beTriggerR)
-                bool  reachedBETrigger = direction == 1 ? high >= beTriggerPrice : low <= beTriggerPrice
+                float beTriggerPrice = direction == 1 ? ePrice + slDistance * beTriggerR : ePrice - slDistance * beTriggerR
+                bool reachedBETrigger = direction == 1 ? high >= beTriggerPrice : low <= beTriggerPrice
                 if reachedBETrigger
                     array.set(tradeSL, i, ePrice)
                     array.set(tradeMovedToBE, i, true)
-                    sPrice    := ePrice
+                    sPrice := ePrice
                     movedToBE := true
                     if not na(activeSLLine)
                         line.set_y1(activeSLLine, ePrice)
@@ -763,8 +739,8 @@ if array.size(tradeStatus) > 0
                         box.set_top(activeSLBox, ePrice)
                         box.set_bottom(activeSLBox, ePrice)
                     if not na(activeLabel)
-                        int   sigT   = array.get(tradeSignalTime, i)
-                        int   entT   = array.get(tradeEntryTime, i)
+                        int sigT = array.get(tradeSignalTime, i)
+                        int entT = array.get(tradeEntryTime, i)
                         float curMfe = array.get(tradeMFE, i)
                         label.set_tooltip(activeLabel, buildTooltip(direction, ePrice, ePrice, tPrice, true, 1, sigT, entT, 0, na, curMfe))
                         if showTradeStats
@@ -772,6 +748,8 @@ if array.size(tradeStatus) > 0
 
             if not na(activeEntryLine)
                 line.set_x2(activeEntryLine, bar_index)
+            if not na(activeLabel)
+                label.set_x(activeLabel, bar_index + 3)
             if not na(activeSLLine)
                 line.set_x2(activeSLLine, bar_index)
             if not na(activeTPLine)
@@ -782,8 +760,8 @@ if array.size(tradeStatus) > 0
                 box.set_right(activeTPBox, bar_index)
 
             bool canCheckExit = bar_index > eBar
-            bool hitSL        = canCheckExit and (direction == 1 ? low <= sPrice : high >= sPrice)
-            bool hitTP        = canCheckExit and (direction == 1 ? high >= tPrice : low <= tPrice)
+            bool hitSL = canCheckExit and (direction == 1 ? low <= sPrice : high >= sPrice)
+            bool hitTP = canCheckExit and (direction == 1 ? high >= tPrice : low <= tPrice)
 
             if hitSL
                 float resR = movedToBE ? 0.0 : -1.0
@@ -792,10 +770,11 @@ if array.size(tradeStatus) > 0
                 array.set(tradeExitTime, i, time)
                 array.set(tradeResultR, i, resR)
                 if not movedToBE
-                    netDailyR -= 1.0
+                    netDailyR := netDailyR - 1.0
+                    netDailyR
                 if not na(activeLabel)
-                    int   sigT     = array.get(tradeSignalTime, i)
-                    int   entT     = array.get(tradeEntryTime, i)
+                    int sigT = array.get(tradeSignalTime, i)
+                    int entT = array.get(tradeEntryTime, i)
                     float tradeMfe = array.get(tradeMFE, i)
                     label.set_tooltip(activeLabel, buildTooltip(direction, ePrice, sPrice, tPrice, movedToBE, 3, sigT, entT, time, resR, tradeMfe))
                     if showTradeStats
@@ -805,10 +784,10 @@ if array.size(tradeStatus) > 0
                 array.set(tradeExitBar, i, bar_index)
                 array.set(tradeExitTime, i, time)
                 array.set(tradeResultR, i, tpRR)
-                netDailyR += tpRR
+                netDailyR := netDailyR + tpRR
                 if not na(activeLabel)
-                    int   sigT     = array.get(tradeSignalTime, i)
-                    int   entT     = array.get(tradeEntryTime, i)
+                    int sigT = array.get(tradeSignalTime, i)
+                    int entT = array.get(tradeEntryTime, i)
                     float tradeMfe = array.get(tradeMFE, i)
                     label.set_tooltip(activeLabel, buildTooltip(direction, ePrice, sPrice, tPrice, movedToBE, 2, sigT, entT, time, tpRR, tradeMfe))
                     if showTradeStats
@@ -817,164 +796,168 @@ if array.size(tradeStatus) > 0
 //=============================================================================
 // SUMMARY TABLE
 //=============================================================================
-var table statsTable = table.new(tablePosition, 2, 24, border_width=1, border_color=color.new(#30363D, 0), frame_color=color.new(#30363D, 0), frame_width=1)
+var table statsTable = table.new(tablePosition, 2, 24, border_width = 1, border_color = color.new(#30363D, 0), frame_color = color.new(#30363D, 0), frame_width = 1)
 
-cHeaderBg  = #0D1117
+cHeaderBg = #0D1117
 cSectionBg = #161B22
-cRowBg     = #0D1117
-cText      = #C9D1D9
-cTextDim   = #8B949E
-cGreen     = #3FB950
-cRed       = #F85149
-cYellow    = #D29922
-cBlue      = #58A6FF
+cRowBg = #0D1117
+cText = #C9D1D9
+cTextDim = #8B949E
+cGreen = #3FB950
+cRed = #F85149
+cYellow = #D29922
+cBlue = #58A6FF
 
 if showTable and barstate.islast
 
-    int   totalTrades    = array.size(tradeStatus)
-    int   pendingCount   = 0
-    int   activeCount    = 0
-    int   winCount       = 0
-    int   lossCount      = 0
-    int   breakEvenCount = 0
-    int   cancelledCount = 0
-    float totalR         = 0.0
+    int totalTrades = array.size(tradeStatus)
+    int pendingCount = 0
+    int activeCount = 0
+    int winCount = 0
+    int lossCount = 0
+    int breakEvenCount = 0
+    int cancelledCount = 0
+    float totalR = 0.0
 
     if totalTrades > 0
-        for i = 0 to totalTrades - 1
+        for i = 0 to totalTrades - 1 by 1
             int currentStatus = array.get(tradeStatus, i)
             if currentStatus == 0
-                pendingCount += 1
+                pendingCount := pendingCount + 1
+                pendingCount
             else if currentStatus == 1
-                activeCount += 1
+                activeCount := activeCount + 1
+                activeCount
             else if currentStatus == 2
-                winCount += 1
-                totalR   += array.get(tradeResultR, i)
+                winCount := winCount + 1
+                totalR := totalR + array.get(tradeResultR, i)
+                totalR
             else if currentStatus == 3
                 float result = array.get(tradeResultR, i)
                 if result == 0
-                    breakEvenCount += 1
+                    breakEvenCount := breakEvenCount + 1
+                    breakEvenCount
                 else
-                    lossCount += 1
-                totalR += result
+                    lossCount := lossCount + 1
+                    lossCount
+                totalR := totalR + result
+                totalR
             else if currentStatus == 4
-                cancelledCount += 1
+                cancelledCount := cancelledCount + 1
+                cancelledCount
 
     // Executed = everything that actually filled (open + closed)
-    int   executedCount   = activeCount + winCount + lossCount + breakEvenCount
-    int   completedTrades = winCount + lossCount + breakEvenCount
-    float winRate         = completedTrades > 0 ? winCount * 100.0 / completedTrades : 0.0
-    color winRateColor    = winRate >= 60 ? cGreen : winRate >= 40 ? cYellow : cRed
-    color totalRColor     = totalR > 0 ? cGreen : totalR < 0 ? cRed : cTextDim
-    string beMode         = beAfterR and beAfterOppositeEntry ? "R + OPPOSITE" : beAfterR ? "R" : beAfterOppositeEntry ? "OPPOSITE" : "OFF"
+    int executedCount = activeCount + winCount + lossCount + breakEvenCount
+    int completedTrades = winCount + lossCount + breakEvenCount
+    float winRate = completedTrades > 0 ? winCount * 100.0 / completedTrades : 0.0
+    color winRateColor = winRate >= 60 ? cGreen : winRate >= 40 ? cYellow : cRed
+    color totalRColor = totalR > 0 ? cGreen : totalR < 0 ? cRed : cTextDim
+    string beMode = beAfterR and beAfterOppositeEntry ? 'R + OPPOSITE' : beAfterR ? 'R' : beAfterOppositeEntry ? 'OPPOSITE' : 'OFF'
 
-    string windowStatus = not enableWindows ? "OFF" : (inLondon ? "LONDON" : inNewYork ? "NEW YORK" : "CLOSED")
+    string windowStatus = not enableWindows ? 'OFF' : inLondon ? 'LONDON' : inNewYork ? 'NEW YORK' : 'CLOSED'
 
     color netColor = netDailyR > 0 ? cGreen : netDailyR < 0 ? cRed : cText
 
-    string tradeLimitText  = enableDailyTradeLimit  ? str.tostring(dailyTradesCount) + " / " + str.tostring(dailyTradeLimit) : "OFF"
-    color  tradeLimitColor = enableDailyTradeLimit  ? (tradeLimitHit  ? cRed : cText) : cTextDim
+    string tradeLimitText = enableDailyTradeLimit ? str.tostring(dailyTradesCount) + ' / ' + str.tostring(dailyTradeLimit) : 'OFF'
+    color tradeLimitColor = enableDailyTradeLimit ? tradeLimitHit ? cRed : cText : cTextDim
 
-    string profitLimitText  = enableDailyProfitRLimit ? str.tostring(netDailyR, "#.##") + "R / +" + str.tostring(dailyProfitRLimit, "#.##") + "R" : "OFF"
-    color  profitLimitColor = enableDailyProfitRLimit ? (profitLimitHit ? cRed : netColor) : cTextDim
+    string profitLimitText = enableDailyProfitRLimit ? str.tostring(netDailyR, '#.##') + 'R / +' + str.tostring(dailyProfitRLimit, '#.##') + 'R' : 'OFF'
+    color profitLimitColor = enableDailyProfitRLimit ? profitLimitHit ? cRed : netColor : cTextDim
 
-    string lossLimitText  = enableDailyLossRLimit ? str.tostring(netDailyR, "#.##") + "R / -" + str.tostring(dailyLossRLimit, "#.##") + "R" : "OFF"
-    color  lossLimitColor = enableDailyLossRLimit ? (lossLimitHit ? cRed : netColor) : cTextDim
+    string lossLimitText = enableDailyLossRLimit ? str.tostring(netDailyR, '#.##') + 'R / -' + str.tostring(dailyLossRLimit, '#.##') + 'R' : 'OFF'
+    color lossLimitColor = enableDailyLossRLimit ? lossLimitHit ? cRed : netColor : cTextDim
 
     // ── Header ──
-    table.cell(statsTable, 0, 0, "  📊  TRADE STATISTICS", bgcolor=cHeaderBg, text_color=color.white, text_size=size.normal, text_halign=text.align_left)
-    table.cell(statsTable, 1, 0, "TODAY  ",                bgcolor=cHeaderBg, text_color=cBlue,      text_size=size.small,  text_halign=text.align_right)
+    table.cell(statsTable, 0, 0, '  📊  TRADE STATISTICS', bgcolor = cHeaderBg, text_color = color.white, text_size = size.normal, text_halign = text.align_left)
+    table.cell(statsTable, 1, 0, 'TODAY  ', bgcolor = cHeaderBg, text_color = cBlue, text_size = size.small, text_halign = text.align_right)
 
     // ── PERFORMANCE ──
-    table.cell(statsTable, 0, 1, "  PERFORMANCE", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 1, "",               bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small)
+    table.cell(statsTable, 0, 1, '  PERFORMANCE', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 1, '', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small)
 
-    table.cell(statsTable, 0, 2, "  📋  Total Trades", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 2, str.tostring(totalTrades) + "  ", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 2, '  📋  Total Trades', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 2, str.tostring(totalTrades) + '  ', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 3, "  ✅  Executed", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 3, str.tostring(executedCount) + "  ", bgcolor=cRowBg, text_color=cBlue, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 3, '  ✅  Executed', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 3, str.tostring(executedCount) + '  ', bgcolor = cRowBg, text_color = cBlue, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 4, "  ✕  Canceled", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 4, str.tostring(cancelledCount) + "  ", bgcolor=cRowBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 4, '  ✕  Canceled', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 4, str.tostring(cancelledCount) + '  ', bgcolor = cRowBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 5, "  ✔  Wins", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 5, str.tostring(winCount) + "  ", bgcolor=cRowBg, text_color=cGreen, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 5, '  ✔  Wins', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 5, str.tostring(winCount) + '  ', bgcolor = cRowBg, text_color = cGreen, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 6, "  ✘  Losses", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 6, str.tostring(lossCount) + "  ", bgcolor=cRowBg, text_color=cRed, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 6, '  ✘  Losses', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 6, str.tostring(lossCount) + '  ', bgcolor = cRowBg, text_color = cRed, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 7, "  ⇄  Break Even", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 7, str.tostring(breakEvenCount) + "  ", bgcolor=cRowBg, text_color=cYellow, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 7, '  ⇄  Break Even', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 7, str.tostring(breakEvenCount) + '  ', bgcolor = cRowBg, text_color = cYellow, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 8, "  🎯  Win Rate", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 8, str.tostring(winRate, "#.##") + "%  ", bgcolor=cRowBg, text_color=winRateColor, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 8, '  🎯  Win Rate', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 8, str.tostring(winRate, '#.##') + '%  ', bgcolor = cRowBg, text_color = winRateColor, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 9, "  💰  Total R", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 9, str.tostring(totalR, "#.##") + "R  ", bgcolor=cRowBg, text_color=totalRColor, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 9, '  💰  Total R', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 9, str.tostring(totalR, '#.##') + 'R  ', bgcolor = cRowBg, text_color = totalRColor, text_size = size.small, text_halign = text.align_right)
 
     // ── STATUS ──
-    table.cell(statsTable, 0, 10, "  STATUS", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 10, "", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small)
+    table.cell(statsTable, 0, 10, '  STATUS', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 10, '', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small)
 
-    table.cell(statsTable, 0, 11, "  ⏳  Pending", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 11, str.tostring(pendingCount) + "  ", bgcolor=cRowBg, text_color=pendingCount > 0 ? cYellow : cTextDim, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 11, '  ⏳  Pending', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 11, str.tostring(pendingCount) + '  ', bgcolor = cRowBg, text_color = pendingCount > 0 ? cYellow : cTextDim, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 12, "  🔵  Open", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 12, str.tostring(activeCount) + "  ", bgcolor=cRowBg, text_color=activeCount > 0 ? cBlue : cTextDim, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 12, '  🔵  Open', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 12, str.tostring(activeCount) + '  ', bgcolor = cRowBg, text_color = activeCount > 0 ? cBlue : cTextDim, text_size = size.small, text_halign = text.align_right)
 
     // ── TREND ──
-    table.cell(statsTable, 0, 13, "  TREND", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 13, "", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small)
+    table.cell(statsTable, 0, 13, '  TREND', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 13, '', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small)
 
-    table.cell(statsTable, 0, 14, "  📈  Trend Filter", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 14, trendFilterMethod + "  ", bgcolor=cRowBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 14, '  📈  Trend Filter', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 14, trendFilterMethod + '  ', bgcolor = cRowBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 15, "  🧭  Bias", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 15, trendBiasMode + "  ", bgcolor=cRowBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 15, '  🧭  Bias', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 15, trendBiasMode + '  ', bgcolor = cRowBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_right)
 
     // ── WINDOW ──
-    table.cell(statsTable, 0, 16, "  WINDOW", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 16, "", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small)
+    table.cell(statsTable, 0, 16, '  WINDOW', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 16, '', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small)
 
-    table.cell(statsTable, 0, 17, "  🕐  Session", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 17, windowStatus + "  ", bgcolor=cRowBg, text_color=windowStatus == "CLOSED" ? cRed : windowStatus == "OFF" ? cTextDim : cGreen, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 17, '  🕐  Session', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 17, windowStatus + '  ', bgcolor = cRowBg, text_color = windowStatus == 'CLOSED' ? cRed : windowStatus == 'OFF' ? cTextDim : cGreen, text_size = size.small, text_halign = text.align_right)
 
     // ── DAILY LIMITS ──
-    table.cell(statsTable, 0, 18, "  DAILY LIMITS", bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 18, "",                bgcolor=cSectionBg, text_color=cTextDim, text_size=size.small)
+    table.cell(statsTable, 0, 18, '  DAILY LIMITS', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 18, '', bgcolor = cSectionBg, text_color = cTextDim, text_size = size.small)
 
-    table.cell(statsTable, 0, 19, "  🔢  Trades", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 19, tradeLimitText + "  ", bgcolor=cRowBg, text_color=tradeLimitColor, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 19, '  🔢  Trades', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 19, tradeLimitText + '  ', bgcolor = cRowBg, text_color = tradeLimitColor, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 20, "  📈  Profit R", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 20, profitLimitText + "  ", bgcolor=cRowBg, text_color=profitLimitColor, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 20, '  📈  Profit R', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 20, profitLimitText + '  ', bgcolor = cRowBg, text_color = profitLimitColor, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 21, "  📉  Loss R", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 21, lossLimitText + "  ", bgcolor=cRowBg, text_color=lossLimitColor, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 21, '  📉  Loss R', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 21, lossLimitText + '  ', bgcolor = cRowBg, text_color = lossLimitColor, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 22, "  ⚖  Risk : Reward", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 22, str.tostring(tpRR, "#.##") + "R  ", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 22, '  ⚖  Risk : Reward', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 22, str.tostring(tpRR, '#.##') + 'R  ', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_right)
 
-    table.cell(statsTable, 0, 23, "  ⚙  Entry / BE", bgcolor=cRowBg, text_color=cText, text_size=size.small, text_halign=text.align_left)
-    table.cell(statsTable, 1, 23, entryType + " · " + entryMode + " · " + beMode + "  ", bgcolor=cRowBg, text_color=cTextDim, text_size=size.small, text_halign=text.align_right)
+    table.cell(statsTable, 0, 23, '  ⚙  Entry / BE', bgcolor = cRowBg, text_color = cText, text_size = size.small, text_halign = text.align_left)
+    table.cell(statsTable, 1, 23, entryType + ' · ' + entryMode + ' · ' + beMode + '  ', bgcolor = cRowBg, text_color = cTextDim, text_size = size.small, text_halign = text.align_right)
 
 //=============================================================================
 // 📡 TRADE LOGGING
 //=============================================================================
 
 tradeToLogString(int i) =>
-    int   dir     = array.get(tradeDirection, i)
-    float entry   = array.get(tradeEntry, i)
-    float mfe     = array.get(tradeMFE, i)
-    int   entTime = array.get(tradeEntryTime, i)
+    int dir = array.get(tradeDirection, i)
+    float entry = array.get(tradeEntry, i)
+    float mfe = array.get(tradeMFE, i)
+    int entTime = array.get(tradeEntryTime, i)
 
-    string dirStr = dir == 1 ? "LONG" : "SHORT"
+    string dirStr = dir == 1 ? 'LONG' : 'SHORT'
 
-    string s = "{\"entry\":" + str.tostring(entry, "#.##########") + "," +
-               "\"direction\":\"" + dirStr + "\"," +
-               "\"mfe\":" + str.tostring(mfe, "#.####") + "," +
-               "\"entry_time\":" + str.tostring(entTime) + "}"
+    string s = '{"entry":' + str.tostring(entry, '#.##########') + ',' + '"direction":"' + dirStr + '",' + '"mfe":' + str.tostring(mfe, '#.####') + ',' + '"entry_time":' + str.tostring(entTime) + '}'
 
     s
 
@@ -1013,13 +996,14 @@ if dumpAllTradesNow and barstate.islast and not dumpAlreadySent
 
     if total > 0
 
-        for i = 0 to total - 1
+        for i = 0 to total - 1 by 1
 
             int st = array.get(tradeStatus, i)
 
             if st != 0 and st != 4
-                log.error("[TRADE] {0}", tradeToLogString(i))
+                log.error('[TRADE] {0}', tradeToLogString(i))
 
         // Lock immediately.
         // varip keeps this TRUE across all realtime ticks.
         dumpAlreadySent := true
+        dumpAlreadySent

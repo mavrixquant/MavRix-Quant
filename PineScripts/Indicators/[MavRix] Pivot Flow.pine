@@ -6,29 +6,29 @@ indicator("[MavRix] Pivot Flow", overlay=true, max_labels_count=500, max_lines_c
 // ══════════════════════════════════════════════════════════════════
 
 // ── LTF PCZ and PL ───────────────────────────────────────────────
-ltfEnable      = input.bool(true,  "Show PCZ and PL",      group="LTF PCZ and PL", tooltip="Shows Pivot Cluster Zones and Pivot Lines for the current timeframe")
+ltfEnable      = input.bool(false,  "Show PCZ and PL",      group="LTF PCZ and PL", tooltip="Shows Pivot Cluster Zones and Pivot Lines for the current timeframe")
 ltfColor       = input.color(color.new(#636363, 90), "PCZ/PL Color",        group="LTF PCZ and PL")
 ltfBorderWidth = input.int(1,  "PCZ/PL Border Width",  group="LTF PCZ and PL", minval=1, maxval=5)
 ltfMaxZones    = input.int(10, "PCZ/PL Zones",         group="LTF PCZ and PL", minval=1, maxval=10)
 ltfPivotSrc    = input.string("High/Low", "Source",    group="LTF PCZ and PL", options=["High/Low", "Close/Open"], tooltip="Source for pivot point calculation")
 
 // ── HTF PCZ and PL ───────────────────────────────────────────────
-htfEnable      = input.bool(false, "Show HTF PCZ and PL",  group="HTF PCZ and PL")
-htfTF          = input.timeframe("60", "HTF Timeframe",    group="HTF PCZ and PL")
+htfEnable      = input.bool(true, "Show HTF PCZ and PL",  group="HTF PCZ and PL")
+htfTF          = input.timeframe("5", "HTF Timeframe",    group="HTF PCZ and PL")
 htfColor       = input.color(color.new(#636363, 90), "HTF PCZ/PL Color",    group="HTF PCZ and PL")
 htfBorderWidth = input.int(1,  "HTF PCZ/PL Border Width", group="HTF PCZ and PL", minval=1, maxval=5)
 htfMaxZones    = input.int(10, "HTF PCZ/PL Zones",        group="HTF PCZ and PL", minval=1, maxval=10)
-pdEnable       = input.bool(true, "Show Premium/Discount Zones", group="HTF PCZ and PL", tooltip="Shows Premium and Discount zones between HTF PCZ/PL levels based on VWAP bias")
+pdEnable       = input.bool(false, "Show Premium/Discount Zones", group="HTF PCZ and PL", tooltip="Shows Premium and Discount zones between HTF PCZ/PL levels based on VWAP bias")
 
 // ── Other Settings ───────────────────────────────────────────────
-engulfEnable   = input.bool(true,  "Show Engulfs",       inline="eng", group="Other Settings")
+engulfEnable   = input.bool(false,  "Show Engulfs",       inline="eng", group="Other Settings")
 engulfBullCol  = input.color(color.new(#26a69a, 0), " |   Bull", inline="eng", group="Other Settings")
 engulfBearCol  = input.color(color.new(#ef5350, 0), "  Bear",    inline="eng", group="Other Settings")
 
 // ── VWAP ─────────────────────────────────────────────────────────
 vwapEnable     = input.bool(true,    "Show VWAP",    group="VWAP")
 vwapSrcType    = input.string("HLC3","VWAP Source",  group="VWAP", options=["Close", "HLC3", "OHLC4"])
-vwapCol        = input.color(color.lime, "VWAP Color", group="VWAP")
+vwapCol        = input.color(color.orange, "VWAP Color", group="VWAP")
 vwapThick      = input.int(2, "VWAP Width",  group="VWAP", minval=1, maxval=5)
 vwapLineStyle  = input.string("Solid","VWAP Style",  group="VWAP", options=["Solid", "Dashed", "Dotted"])
 biasBars       = input.int(10, "VWAP Confirmation Candles", group="VWAP", minval=3,  maxval=50,  tooltip="Number of previous candles to analyze for VWAP bias")
@@ -36,12 +36,12 @@ biasThreshold  = input.int(70, "VWAP Bias Threshold %",     group="VWAP", minval
 
 // ── OPEN & H/L ───────────────────────────────────────────────────
 grpDWM        = "OPEN & H/L"
-showTDO       = input.bool(false, "True D Open",  group=grpDWM)
-showDO        = input.bool(false, "D Open",       group=grpDWM, inline="dOpen")
-showDHL       = input.bool(false, "High/Low",     group=grpDWM, inline="dOpen")
+showTDO       = input.bool(true, "True D Open",  group=grpDWM)
+showDO        = input.bool(true, "D Open",       group=grpDWM, inline="dOpen")
+showDHL       = input.bool(true, "High/Low",     group=grpDWM, inline="dOpen")
 dCol          = input.color(color.gray, "",        group=grpDWM, inline="dOpen")
-showWO        = input.bool(false, "W Open",       group=grpDWM, inline="wOpen")
-showWHL       = input.bool(false, "High/Low",     group=grpDWM, inline="wOpen")
+showWO        = input.bool(true, "W Open",       group=grpDWM, inline="wOpen")
+showWHL       = input.bool(true, "High/Low",     group=grpDWM, inline="wOpen")
 wCol          = input.color(color.gray, "",        group=grpDWM, inline="wOpen")
 dwmStyle      = input.string("Solid","Line Style", group=grpDWM, options=["Solid","Dotted","Dashed"])
 dwmStyle     := dwmStyle == "Solid" ? line.style_solid : dwmStyle == "Dotted" ? line.style_dotted : line.style_dashed
@@ -51,10 +51,10 @@ dwmWidth      = input.int(1, "Line Width", group=grpDWM)
 showAsia      = input.bool(false, "Asia",     group="Sessions", inline="as")
 asiaCol       = input.color(color.new(#636363, 90), " ",  group="Sessions", inline="as")
 asiaSession   = input.session("1700-0200",                " ",  group="Sessions", inline="as")
-showLondon    = input.bool(false, "London",   group="Sessions", inline="ln")
+showLondon    = input.bool(true, "London",   group="Sessions", inline="ln")
 londonCol     = input.color(color.new(#636363, 90), " ",  group="Sessions", inline="ln")
 londonSession = input.session("0200-0400",                " ",  group="Sessions", inline="ln")
-showNY        = input.bool(false, "New York", group="Sessions", inline="ny")
+showNY        = input.bool(true, "New York", group="Sessions", inline="ny")
 nyCol         = input.color(color.new(#636363, 90), " ",  group="Sessions", inline="ny")
 nySession     = input.session("0800-1000",                " ",  group="Sessions", inline="ny")
 

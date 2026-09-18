@@ -1,26 +1,20 @@
 //@version=6
-indicator("[MavRix] Bar Statistics", overlay=false, max_boxes_count=500, max_labels_count=500)
+indicator("[MavRix] Bar Statistics", overlay=false, max_boxes_count=500)
 
 // ───────────────────────────── Inputs ─────────────────────────────
 lowerTF       = input.timeframe("1", "Intrabar Timeframe (for buy/sell approx)")
-barsToShow    = input.int(50, "Bars to Show", minval=3, maxval=50)
+barsToShow    = input.int(100, "Bars to Show", minval=3, maxval=150)
 resetCumDaily = input.bool(true, "Reset Cum Delta Daily")
 lblSize       = input.string("normal", "Cell Text Size", options=["tiny","small","normal","large","huge"])
 showHeaders   = input.bool(true, "Show Row Headers")
 
 grpRows = "Rows to Show"
-showTrades   = input.bool(false, "Trades",       group=grpRows)
-showVolume   = input.bool(false, "Volume",       group=grpRows)
-showBuyVol   = input.bool(false, "Buy Vol",      group=grpRows)
-showSellVol  = input.bool(false, "Sell Vol",     group=grpRows)
-showDeltaBar = input.bool(true, "Delta (Bar)",  group=grpRows)
-showDeltaPct = input.bool(false, "Delta (%)",    group=grpRows)
-showCumDelta = input.bool(true, "Cum delta",    group=grpRows)
-showMinDelta = input.bool(false, "Min delta",    group=grpRows)
-showMaxDelta = input.bool(false, "Max delta",    group=grpRows)
+showVolume   = input.bool(true, "Volume",    group=grpRows)
+showDeltaBar = input.bool(true, "Delta (Bar)", group=grpRows)
+showCumDelta = input.bool(true, "Cum delta", group=grpRows)
 
 grpAbsorb = "Absorption"
-showAbsorption = input.bool(true, "Show Absorption", group=grpAbsorb, tooltip="Highlights Delta (Bar) cells where delta direction is inverted relative to candle color")
+showAbsorption = input.bool(true, "Show Absorptions", group=grpAbsorb, tooltip="Highlights Delta (Bar) cells where net delta direction is opposite the candle's direction (e.g. bearish candle but net buying, or bullish candle but net selling). Doji bars (close == open) are excluded to avoid false signals.")
 
 txtSize = lblSize == "tiny" ? size.tiny : lblSize == "small" ? size.small : lblSize == "normal" ? size.normal : lblSize == "large" ? size.large : size.huge
 
@@ -33,14 +27,10 @@ plot(100, "scale_high", color=na, display=display.pane)
 
 buyVol  = 0.0
 sellVol = 0.0
-trades  = array.size(ltfClose)
+n_ltf   = array.size(ltfClose)
 
-runDelta = 0.0
-minD = 0.0
-maxD = 0.0
-
-if trades > 0
-    for i = 0 to trades - 1
+if n_ltf > 0
+    for i = 0 to n_ltf - 1
         c = array.get(ltfClose, i)
         o = array.get(ltfOpen, i)
         v = array.get(ltfVol, i)
@@ -51,15 +41,8 @@ if trades > 0
         else
             buyVol  += v / 2
             sellVol += v / 2
-        runDelta += (c > o ? v : c < o ? -v : 0.0)
-        minD := math.min(minD, runDelta)
-        maxD := math.max(maxD, runDelta)
-
-minDelta = minD
-maxDelta = maxD
 
 deltaBar = buyVol - sellVol
-deltaPct = volume != 0 ? (deltaBar / volume) * 100 : 0.0
 
 var float cumDelta = 0.0
 isNewDay = ta.change(time("D")) != 0
@@ -67,55 +50,31 @@ if resetCumDaily and isNewDay
     cumDelta := 0.0
 cumDelta += deltaBar
 
+// Candle direction as an explicit tri-state: 1 = bull, -1 = bear, 0 = doji/neutral
+// (this replaces the old boolean "isBull" which silently treated doji bars as bearish)
+barDir = close > open ? 1 : close < open ? -1 : 0
+
 // ───────────────────────── Store Per-Bar History ─────────────────────────
-var array<int>   aTrades   = array.new<int>()
 var array<float> aVolume   = array.new<float>()
-var array<float> aBuyVol   = array.new<float>()
-var array<float> aSellVol  = array.new<float>()
 var array<float> aDeltaBar = array.new<float>()
-var array<float> aDeltaPct = array.new<float>()
 var array<float> aCumDelta = array.new<float>()
-var array<float> aMinDelta = array.new<float>()
-var array<float> aMaxDelta = array.new<float>()
 var array<int>   aBarIndex = array.new<int>()
-var array<bool>  aBullBar  = array.new<bool>()   // <-- NEW: stores candle direction per historical bar
+var array<int>   aBarDir   = array.new<int>()
 
 addAndTrim(arr, val) =>
     array.push(arr, val)
     if array.size(arr) > barsToShow
         array.shift(arr)
 
-addAndTrim(aTrades,   trades)
 addAndTrim(aVolume,   volume)
-addAndTrim(aBuyVol,   buyVol)
-addAndTrim(aSellVol,  sellVol)
 addAndTrim(aDeltaBar, deltaBar)
-addAndTrim(aDeltaPct, deltaPct)
 addAndTrim(aCumDelta, cumDelta)
-addAndTrim(aMinDelta, minDelta)
-addAndTrim(aMaxDelta, maxDelta)
 addAndTrim(aBarIndex, bar_index)
-addAndTrim(aBullBar,  close > open)              // <-- NEW: record this bar's direction
-
-// ───────────────────────── Build Active Row List ─────────────────────────
-var array<string> rowNames = array.new<string>()
-var array<bool>   rowShown = array.new<bool>()
-
-if barstate.isfirst
-    array.push(rowNames, "Trades")      , array.push(rowShown, showTrades)
-    array.push(rowNames, "Volume")      , array.push(rowShown, showVolume)
-    array.push(rowNames, "Buy Vol")     , array.push(rowShown, showBuyVol)
-    array.push(rowNames, "Sell Vol")    , array.push(rowShown, showSellVol)
-    array.push(rowNames, "Delta (Bar)") , array.push(rowShown, showDeltaBar)
-    array.push(rowNames, "Delta (%)")   , array.push(rowShown, showDeltaPct)
-    array.push(rowNames, "Cum delta")   , array.push(rowShown, showCumDelta)
-    array.push(rowNames, "Min delta")   , array.push(rowShown, showMinDelta)
-    array.push(rowNames, "Max delta")   , array.push(rowShown, showMaxDelta)
-
-activeCount = (showTrades ? 1 : 0) + (showVolume ? 1 : 0) + (showBuyVol ? 1 : 0) + (showSellVol ? 1 : 0) +
-     (showDeltaBar ? 1 : 0) + (showDeltaPct ? 1 : 0) + (showCumDelta ? 1 : 0) + (showMinDelta ? 1 : 0) + (showMaxDelta ? 1 : 0)
+addAndTrim(aBarDir,   barDir)
 
 // ───────────────────────── Row Layout (grid) ─────────────────────────
+activeCount = (showVolume ? 1 : 0) + (showDeltaBar ? 1 : 0) + (showCumDelta ? 1 : 0)
+
 rowH = activeCount > 0 ? 90.0 / activeCount : 90.0
 y0   = 95.0
 
@@ -127,15 +86,17 @@ down_col        = color.new(color.red, 20)
 neu_col         = color.new(color.gray, 55)
 border_col      = color.new(color.gray, 40)
 hdr_col         = color.new(color.black, 0)
-buyAbsorb_col   = color.new(color.blue, 20)     // <-- NEW: bearish candle, delta positive
-sellAbsorb_col  = color.new(color.orange, 20)   // <-- NEW: bullish candle, delta negative
+buyAbsorb_col   = color.new(color.blue, 20)     // bearish candle, delta positive (sellers overpowered by hidden buying)
+sellAbsorb_col  = color.new(color.orange, 20)   // bullish candle, delta negative (buyers overpowered by hidden selling)
 
 fmt(v) => str.tostring(v, "#.##")
 
-// Buy absorption: candle closed down, but net delta was positive (buyers absorbed the selling)
-isBuyAbsorption(delta, isBull) => (not isBull) and delta > 0
-// Sell absorption: candle closed up, but net delta was negative (sellers absorbed the buying)
-isSellAbsorption(delta, isBull) => isBull and delta < 0
+// Buy absorption: candle closed DOWN (dir == -1), but net delta was positive (buyers absorbed the selling)
+isBuyAbsorption(delta, dir) => dir == -1 and delta > 0
+// Sell absorption: candle closed UP (dir == 1), but net delta was negative (sellers absorbed the buying)
+isSellAbsorption(delta, dir) => dir == 1 and delta < 0
+// Doji bars (dir == 0) never qualify for either — this is the fix: previously a doji
+// was treated as "bearish" (since close > open was false), causing false buy-absorption flags.
 
 // ───────────────────────── Draw Grid Cells Per Candle ─────────────────────────
 var array<box> allBoxes = array.new<box>()
@@ -156,81 +117,38 @@ if barstate.islast
     lastBx = n > 0 ? array.get(aBarIndex, n - 1) : bar_index
 
     for idx = 0 to n - 1
-        bx   = array.get(aBarIndex, idx)
-        tr   = array.get(aTrades, idx)
-        vol  = array.get(aVolume, idx)
-        bv   = array.get(aBuyVol, idx)
-        sv   = array.get(aSellVol, idx)
-        db   = array.get(aDeltaBar, idx)
-        dp   = array.get(aDeltaPct, idx)
-        cd   = array.get(aCumDelta, idx)
-        mnd  = array.get(aMinDelta, idx)
-        mxd  = array.get(aMaxDelta, idx)
-        bull = array.get(aBullBar, idx)          // <-- NEW: this bar's direction
+        bx  = array.get(aBarIndex, idx)
+        vol = array.get(aVolume, idx)
+        db  = array.get(aDeltaBar, idx)
+        cd  = array.get(aCumDelta, idx)
+        dir = array.get(aBarDir, idx)
 
         slot = 0
-        if showTrades
-            mkCell(bx, slot, str.tostring(tr), neu_col)
-            slot += 1
         if showVolume
             mkCell(bx, slot, str.tostring(vol), neu_col)
             slot += 1
-        if showBuyVol
-            mkCell(bx, slot, fmt(bv), up_col)
-            slot += 1
-        if showSellVol
-            mkCell(bx, slot, fmt(sv), down_col)
-            slot += 1
         if showDeltaBar
-            // ── MODIFIED: three-way color check instead of plain db>=0 ? up : down ──
             dbColor = db >= 0 ? up_col : down_col
             if showAbsorption
-                if isBuyAbsorption(db, bull)
+                if isBuyAbsorption(db, dir)
                     dbColor := buyAbsorb_col
-                else if isSellAbsorption(db, bull)
+                else if isSellAbsorption(db, dir)
                     dbColor := sellAbsorb_col
             mkCell(bx, slot, fmt(db), dbColor)
             slot += 1
-        if showDeltaPct
-            mkCell(bx, slot, fmt(dp) + "%", dp >= 0 ? up_col : down_col)
-            slot += 1
         if showCumDelta
             mkCell(bx, slot, fmt(cd), cd >= 0 ? up_col : down_col)
-            slot += 1
-        if showMinDelta
-            mkCell(bx, slot, fmt(mnd), down_col)
-            slot += 1
-        if showMaxDelta
-            mkCell(bx, slot, fmt(mxd), up_col)
             slot += 1
 
     // ── Row headers, drawn on the RIGHT of the last column, same coordinate system ──
     if showHeaders
         hSlot = 0
-        if showTrades
-            mkCell(lastBx + 1, hSlot, "Trades", hdr_col)
-            hSlot += 1
         if showVolume
             mkCell(lastBx + 1, hSlot, "Volume", hdr_col)
-            hSlot += 1
-        if showBuyVol
-            mkCell(lastBx + 1, hSlot, "Buy Vol", hdr_col)
-            hSlot += 1
-        if showSellVol
-            mkCell(lastBx + 1, hSlot, "Sell Vol", hdr_col)
             hSlot += 1
         if showDeltaBar
             mkCell(lastBx + 1, hSlot, "Delta (Bar)", hdr_col)
             hSlot += 1
-        if showDeltaPct
-            mkCell(lastBx + 1, hSlot, "Delta (%)", hdr_col)
-            hSlot += 1
         if showCumDelta
             mkCell(lastBx + 1, hSlot, "Cum delta", hdr_col)
-            hSlot += 1
-        if showMinDelta
-            mkCell(lastBx + 1, hSlot, "Min delta", hdr_col)
-            hSlot += 1
-        if showMaxDelta
-            mkCell(lastBx + 1, hSlot, "Max delta", hdr_col)
             hSlot += 1

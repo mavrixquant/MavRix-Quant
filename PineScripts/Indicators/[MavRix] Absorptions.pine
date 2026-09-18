@@ -11,6 +11,8 @@
 // price-level footprint/order-flow data. This script therefore reports
 // "mathematical evidence consistent with absorption," not certainty.
 // =============================================================================
+
+
 indicator("[MavRix] Absorptions", overlay = true, max_labels_count = 500, max_lines_count = 200)
 
 // ============================== INPUTS ======================================
@@ -40,7 +42,7 @@ confirmMode = input.string("Bar Close", "Confirmation Mode",
              tooltip = "'Bar Close' signals the moment the absorption bar closes. 'Confirmed + Next Bar' delays the signal one extra bar to minimize any repaint risk.")
 filterMode = input.string("Score Only (Ignore Gates)", "Filter Mode", options = ["Strict", "Score Only (Ignore Gates)"], group = grpMode,
              tooltip = "Strict: All individual gates (Delta Z, RVOL, Efficiency, Rejection, Recovery) must pass. Score Only: Ignores those gates, uses only the final Absorption Score against the threshold.")
-scoreOnlyType = input.string("Both", "Score Only Type", options = ["Both", "Strong", "Weak"], group = grpMode,
+scoreOnlyType = input.string("Strong", "Score Only Type", options = ["Both", "Strong", "Weak"], group = grpMode,
              tooltip = "Applies when 'Score Only' is selected.\nBoth: Shows all.\nStrong: Shows only Delta Confirmed.\nWeak: Shows only Delta Mismatch.")
 
 grpDisp = "Display"
