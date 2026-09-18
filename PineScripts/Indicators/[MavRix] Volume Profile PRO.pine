@@ -1,0 +1,223 @@
+// This source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// [MavRix] Volume Profile PRO — HVN / LVN detection module
+//   Detects High-Volume and Low-Volume Nodes from an internally computed
+//   session volume histogram. Profile drawing has been removed — pair with
+//   TradingView's Session Volume Profile (SVP) for the histogram display.
+//
+//   The per-row volume distribution below is adapted from the wick/body
+//   volume-splitting technique used in "Market sessions and Volume profile"
+//   by mindyourbuisness (volume-profile elements originally inspired by
+//   @LonesomeTheBlue, based on a script by (c) Leviathan). Also MPL-2.0.
+
+//@version=5
+indicator("[MavRix] Volume Profile PRO", "[MavRix] VP PRO", true, max_bars_back=5000, max_lines_count=500, max_polylines_count=100, max_labels_count=500, max_boxes_count=500)
+
+//———— INPUTS —————
+var g_VP = "Volume Profile"
+
+// --- Histogram resolution (feeds HVN / LVN detection) ---
+rows = input.int(100, "Rows", minval=10, maxval=250, tooltip="Price rows used to build the internal volume histogram. Higher = more precise node boundaries. Feeds HVN / LVN detection only — nothing is drawn from this.", group=g_VP)
+
+// --- High Volume Nodes ---
+var g_HVN = "High Volume Nodes"
+show_hvn       = input.bool(true, "Show Previous HVNs", inline="HVN", tooltip="Show high volume nodes (HVNs) from the previous session", group=g_HVN)
+hvn_color_bull = input.color(color.new(#4a4a4a, 70), "", inline="HVN", group=g_HVN)
+hvn_color_bear = input.color(color.new(#4a4a4a, 70), "", inline="HVN", group=g_HVN)
+hvn_strength   = input.int(10, "HVN Strength", tooltip="HVNs are validated when a given level contains more volume than this many rows above and below", group=g_HVN)
+hvn_type       = input.string("Areas", "HVN Type", options=['Levels','Areas'], tooltip="Display HVNs as levels (lines) or areas (boxes)", group=g_HVN)
+hvn_width      = input.int(1, "Line Width", tooltip="The width of HVN lines, if the HVN type is selected as levels", group=g_HVN)
+
+// --- Low Volume Nodes ---
+var g_LVN = "Low Volume Nodes"
+show_lvn       = input.bool(true, "Show Low Volume Nodes", inline="LVN", tooltip="Show low volume nodes (LVNs) from the previous session", group=g_LVN)
+lvn_color_bull = input.color(color.new(#ffffff, 70), "", inline="LVN", group=g_LVN)
+lvn_color_bear = input.color(color.new(#ffffff, 70), "", inline="LVN", group=g_LVN)
+lvn_strength   = input.int(23, "LVN Strength", tooltip="LVNs are validated when a given level contains lower volume than this many rows above and below", group=g_LVN)
+lvn_type       = input.string("Levels", "LVN Type", options=['Levels','Areas'], tooltip="Display LVNs as levels (lines) or areas (boxes)", group=g_LVN)
+lvn_width      = input.int(1, "Line Width", tooltip="The width of LVN lines, if the LVN type is selected as levels", group=g_LVN)
+
+//———— STATIC TIMEFRAMES —————
+// Profile Timeframe is fixed to Daily. Resolution Timeframe is fixed to 1-minute.
+tf  = "D"
+ltf = "1"
+
+//———— GLOBAL ARRAYS —————
+// Session histogram. Only the total is needed for HVN / LVN detection.
+var values = array.new_float()   // total volume per row
+var y_vol  = array.new_float()   // price level of each row
+
+// HVN visuals.
+var hvn_lines = array.new_line()
+var hvn_boxes = array.new_box()
+var hvn_Ly    = array.new_float()
+var hvn_By    = array.new_float()
+
+// LVN visuals.
+var lvn_lines = array.new_line()
+var lvn_boxes = array.new_box()
+var lvn_Ly    = array.new_float()
+var lvn_By    = array.new_float()
+
+//———— SESSION VARIABLES —————
+var int lb_idx  = na
+var int lb_time = na
+
+ltf := timeframe.in_seconds(ltf) <= timeframe.in_seconds() ? ltf : ""
+[ltf_O, ltf_H, ltf_L, ltf_C, ltf_V] = request.security_lower_tf(syminfo.tickerid, ltf, [open, high, low, close, volume])
+
+//———— GLOBAL FUNCTIONS —————
+
+// Overlap-based volume allocation (from the Leviathan volume profile script):
+// how much of `vol` -- assigned to a price span whose total size is `height` --
+// falls inside the row window [y11, y12].
+get_vol(y11, y12, y21, y22, height, vol) =>
+    nz(math.max(math.min(math.max(y11, y12), math.max(y21, y22)) - math.max(math.min(y11, y12), math.min(y21, y22)), 0) * vol / height)
+
+// Distribute one lower-timeframe bar's volume across every row using the
+// Leviathan body/wick weighting: body volume goes in full, wick volume is
+// weighted 2x per unit of price (since wicks span more price per unit of time
+// than the body). Totals are accumulated directly -- no directional split.
+add_bar_to_profile(o, h, l, c, v, row_h) =>
+    body_top = math.max(c, o)
+    body_bot = math.min(c, o)
+    top_wick = h - body_top
+    bot_wick = body_bot - l
+    body     = body_top - body_bot
+    denom    = 2 * top_wick + 2 * bot_wick + body
+    if denom > 0
+        body_vol = body * v / denom
+        top_vol  = 2 * top_wick * v / denom
+        bot_vol  = 2 * bot_wick * v / denom
+        for j = 0 to values.size() - 1
+            row_top  = y_vol.get(j) + row_h / 2
+            row_bot  = y_vol.get(j) - row_h / 2
+            add_body = body > 0 ? get_vol(row_bot, row_top, body_bot, body_top, body, body_vol) : 0.0
+            add_top  = top_wick > 0 ? get_vol(row_bot, row_top, body_top, h, top_wick, top_vol) : 0.0
+            add_bot  = bot_wick > 0 ? get_vol(row_bot, row_top, body_bot, l, bot_wick, bot_vol) : 0.0
+            total_add = add_body + add_top + add_bot
+            if total_add > 0
+                values.set(j, values.get(j) + total_add)
+
+// High-volume node scan over the current histogram.
+get_hvn() =>
+    if values.size() > hvn_strength
+        for i = 0 to values.size() - 1
+            start = values.get(i)
+            valid = true
+            for j = -hvn_strength to hvn_strength
+                k = i + j
+                if k < 0 or k > values.size() - 1
+                    continue
+                else
+                    if j != 0 and values.get(k) > start
+                        valid := false
+                        break
+            if valid
+                idx = values.indexof(start)
+                if idx != -1
+                    y1  = y_vol.get(idx)
+                    y2  = y_vol.get(idx)
+                    val_y = y_vol.get(idx)
+                    if i < values.size() - 1
+                        for m = i to values.size() - 2
+                            if values.get(m + 1) > values.get(m)
+                                y1 := y_vol.get(m)
+                                break
+                    if i > 0
+                        for m = i to 1
+                            if values.get(m - 1) > values.get(m)
+                                y2 := y_vol.get(m)
+                                break
+                    new_color = close[1] > math.avg(y1, y2) ? hvn_color_bull : hvn_color_bear
+                    if hvn_type == "Levels"
+                        if hvn_Ly.indexof(val_y) == -1
+                            hvn_Ly.unshift(val_y)
+                            hvn_lines.unshift(line.new(time, val_y, time + timeframe.in_seconds(tf)*1000, val_y, xloc=xloc.bar_time, color=color.new(new_color, 0), style=start == values.max() ? line.style_solid : line.style_dotted, width=hvn_width))
+                    else
+                        if hvn_By.indexof(y1) == -1
+                            hvn_By.unshift(y1)
+                            hvn_boxes.unshift(box.new(time, y1, time + timeframe.in_seconds(tf)*1000, y2, xloc=xloc.bar_time, bgcolor=new_color, border_color=na))
+
+// Low-volume node scan over the current histogram.
+get_lvn() =>
+    if values.size() > lvn_strength
+        for i = 0 to values.size() - 1
+            start = values.get(i)
+            valid = true
+            for j = -lvn_strength to lvn_strength
+                k = i + j
+                if k < 0 or k > values.size() - 1
+                    continue
+                else
+                    if j != 0 and values.get(k) < start
+                        valid := false
+                        break
+            if valid
+                idx = values.indexof(start)
+                if idx != -1
+                    y1  = y_vol.get(idx)
+                    y2  = y_vol.get(idx)
+                    val_y = y_vol.get(idx)
+                    if i < values.size() - 1
+                        for m = i to values.size() - 2
+                            if values.get(m + 1) < values.get(m)
+                                y1 := y_vol.get(m)
+                                break
+                    if i > 0
+                        for m = i to 1
+                            if values.get(m - 1) < values.get(m)
+                                y2 := y_vol.get(m)
+                                break
+                    new_color = close[1] > math.avg(y1, y2) ? lvn_color_bear : lvn_color_bull
+                    if lvn_type == "Levels"
+                        if lvn_Ly.indexof(val_y) == -1
+                            lvn_Ly.unshift(val_y)
+                            lvn_lines.unshift(line.new(time, val_y, time + timeframe.in_seconds(tf)*1000, val_y, xloc=xloc.bar_time, color=color.new(new_color, 0), style=start == array.min(values) ? line.style_solid : line.style_dotted, width=lvn_width))
+                    else
+                        if lvn_By.indexof(y1) == -1
+                            lvn_By.unshift(y1)
+                            lvn_boxes.unshift(box.new(time, y1, time + timeframe.in_seconds(tf)*1000, y2, xloc=xloc.bar_time, bgcolor=new_color, border_color=na))
+
+//———— SESSION INIT & ROLLING UPDATE —————
+if not na(lb_idx)
+    lb = bar_index - lb_idx > 0 ? (bar_index - lb_idx) : 1
+
+    y_max = ta.highest(high[1], lb)
+    y_min = ta.lowest(low[1], lb)
+    row_h = (y_max - y_min) / rows
+
+    if timeframe.change(tf) or barstate.islast
+        y_vol.clear()
+        values.clear()
+        for i = 0 to rows
+            y = y_min + i * row_h
+            y_vol.push(y)
+            values.push(0.0)
+
+        for i = bar_index - lb_idx to 1
+            volArr = ltf_V[i]
+            if volArr.size() > 0
+                openArr  = ltf_O[i]
+                highArr  = ltf_H[i]
+                lowArr   = ltf_L[i]
+                closeArr = ltf_C[i]
+                for k = 0 to volArr.size() - 1
+                    add_bar_to_profile(openArr.get(k), highArr.get(k), lowArr.get(k), closeArr.get(k), volArr.get(k), row_h)
+
+// End of histogram update block
+
+if timeframe.change(tf)
+    lb_idx  := bar_index
+    lb_time := time
+    if show_hvn
+        hvn_lines.clear()
+        hvn_boxes.clear()
+        hvn_Ly.clear()
+        hvn_By.clear()
+        get_hvn()
+    if show_lvn
+        lvn_lines.clear()
+        lvn_boxes.clear()
+        lvn_Ly.clear()
+        lvn_By.clear()
+        get_lvn()

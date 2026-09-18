@@ -1,0 +1,799 @@
+// ============================================================
+// GAMMA STRUCTURE INDICATOR v6
+// Pine Script v6 — NQ/MNQ Gamma Exposure Map
+// ============================================================
+// MODE: ESTIMATED GEX (Proxy Mode)
+// TradingView/Pine Script does NOT provide access to live
+// options chains (OI, per-strike IV, Greeks, expirations).
+// ALL GEX values are ESTIMATED using:
+//   - Black-Scholes Gamma (mathematically exact)
+//   - Parametric OI proxy (lognormal distribution around ATM)
+//   - IV sourced from VXN/VIX security request or user input
+//   - Strike grid constructed around current price
+// NOTHING in this script claims to be institutional GEX.
+// ============================================================
+
+//@version=6
+indicator(title="[MavRix] GEX", shorttitle="[MavRix] GEX", overlay=true, max_labels_count=200, max_lines_count=100, max_boxes_count=50)
+
+// ============================================================
+// ─── SECTION 1: INPUTS
+// ============================================================
+
+// ── Data / Underlying ──────────────────────────────────────
+grp_data = "━━ DATA SOURCE ━━"
+i_underlying   = input.string("NQ",  "Underlying", options=["NQ","MNQ","NDX","QQQ","SPX","SPY","Custom"], group=grp_data)
+i_iv_source    = input.string("VXN", "IV Source",  options=["VXN","VIX","Manual","ATM-Approx"],          group=grp_data, tooltip="VXN = CBOE Nasdaq-100 Volatility Index. Manual = enter IV below.")
+i_manual_iv    = input.float(0.20,   "Manual IV (decimal, e.g. 0.20 = 20%)", minval=0.01, maxval=5.0, step=0.01, group=grp_data)
+i_ndx_nq_map   = input.string("Auto Ratio", "NDX→NQ Mapping", options=["Auto Ratio","Manual Factor","No Mapping"], group=grp_data)
+i_manual_ratio = input.float(1.0,    "Manual Mapping Factor",  minval=0.001, step=0.001, group=grp_data)
+i_manual_offset= input.float(0.0,    "Manual Mapping Offset",  step=0.5,                group=grp_data)
+
+// ── GEX Model ──────────────────────────────────────────────
+grp_model = "━━ GEX MODEL ━━"
+i_dealer_conv  = input.string("Standard (Dealer Short Calls / Long Puts)", "Dealer Convention",
+     options=["Standard (Dealer Short Calls / Long Puts)","Reverse (Dealer Long Calls / Short Puts)","Net Absolute"],
+     group=grp_model, tooltip="Standard: Calls reduce gamma, Puts add gamma. This is an ASSUMPTION about dealer positioning.")
+i_multiplier   = input.float(20.0,  "Contract Multiplier (NQ=20, MNQ=2)", minval=1, group=grp_model)
+i_rate         = input.float(0.05,  "Risk-Free Rate (annual)", minval=0.0, maxval=0.5, step=0.001, group=grp_model)
+i_div_yield    = input.float(0.0,   "Dividend Yield (annual)", minval=0.0, maxval=0.5, step=0.001, group=grp_model)
+i_total_oi     = input.float(500000,"Total OI Estimate (contracts)", minval=1000, step=10000,        group=grp_model,
+     tooltip="Estimated total open interest across all strikes. Directly scales GEX magnitude. Adjust to reflect market conditions.")
+i_oi_skew      = input.float(0.08,  "OI Distribution Width (% of price)", minval=0.01, maxval=0.5, step=0.01, group=grp_model,
+     tooltip="Controls spread of estimated OI across strikes. Larger = more distributed OI. This is a PARAMETRIC PROXY.")
+i_put_skew     = input.float(0.55,  "Put OI Weight vs Call OI (0.5=equal)", minval=0.1, maxval=0.9, step=0.01, group=grp_model,
+     tooltip="Fraction of total OI assigned to puts. 0.55 = slight put-heavy skew typical in equity markets.")
+
+// ── Strike Profile ─────────────────────────────────────────
+grp_profile = "━━ STRIKE PROFILE ━━"
+i_num_strikes  = input.int(30,   "Strikes Above & Below Price", minval=5,  maxval=50,  group=grp_profile)
+i_strike_int   = input.int(25,   "Strike Interval (points)",    minval=1,  maxval=500, group=grp_profile)
+i_profile_show = input.bool(true,"Show Gamma Profile",                                 group=grp_profile)
+i_profile_width= input.float(0.5,"Profile Bar Width (% of screen)", minval=0.1, maxval=5.0, step=0.1, group=grp_profile)
+i_threshold_pct= input.float(10.0,"Major Zone Threshold (top % of GEX)", minval=1, maxval=50, step=1, group=grp_profile)
+
+// ── 0DTE ───────────────────────────────────────────────────
+grp_0dte = "━━ 0DTE ━━"
+i_0dte_enable  = input.bool(true,  "Show 0DTE GEX Estimate",                   group=grp_0dte)
+i_0dte_min_t   = input.float(0.002,"Min T for 0DTE (fraction of year, ~0.002=~0.7 days)", minval=0.0001, maxval=0.1, step=0.0001, group=grp_0dte)
+i_0dte_weight  = input.float(0.25, "0DTE Fraction of Total OI",                minval=0.01, maxval=1.0, step=0.01, group=grp_0dte,
+     tooltip="Estimated fraction of total OI in 0DTE contracts. 0.25 = 25% of OI assumed 0DTE.")
+
+// ── Expiration Weighting ───────────────────────────────────
+grp_exp = "━━ EXPIRATION ━━"
+i_exp_mode     = input.string("Time-Weighted", "Expiration Mode",
+     options=["Equal Weight","Time-Weighted","0DTE Emphasized","Custom"],
+     group=grp_exp)
+i_avg_dte      = input.float(14.0, "Average DTE (days) for full chain", minval=1, maxval=90, step=1, group=grp_exp,
+     tooltip="Representative DTE for the non-0DTE portion of the OI distribution.")
+i_custom_wt    = input.float(1.0,  "Custom Expiration Weight Multiplier", minval=0.1, maxval=10.0, group=grp_exp)
+
+// ── Levels Display ─────────────────────────────────────────
+grp_levels = "━━ LEVELS ━━"
+i_show_cwall   = input.bool(true, "Show Call Wall",          group=grp_levels)
+i_show_pwall   = input.bool(true, "Show Put Wall",           group=grp_levels)
+i_show_flip    = input.bool(true, "Show Zero Gamma (Flip)",  group=grp_levels)
+i_show_maxgex  = input.bool(true, "Show Max Gamma Strike",   group=grp_levels)
+i_show_zones   = input.bool(true, "Show Major Gamma Zones",  group=grp_levels)
+i_dist_format  = input.string("Points", "Distance Format", options=["Points","Percent","ATR"], group=grp_levels)
+i_line_style   = input.string("Dashed", "Line Style", options=["Solid","Dashed","Dotted"], group=grp_levels)
+
+// ── Signals ────────────────────────────────────────────────
+grp_sig = "━━ SIGNALS ━━"
+i_sig_walltest = input.bool(true,  "Alert: Price Enters Gamma Zone", group=grp_sig)
+i_sig_flip     = input.bool(true,  "Alert: Zero Gamma Cross",        group=grp_sig)
+i_sig_regime   = input.bool(true,  "Alert: Gamma Regime Change",     group=grp_sig)
+
+// ── Visual ─────────────────────────────────────────────────
+grp_vis = "━━ VISUAL ━━"
+i_show_dash    = input.bool(true,  "Show Dashboard",   group=grp_vis)
+i_show_labels  = input.bool(true,  "Show Level Labels",group=grp_vis)
+i_dash_pos     = input.string("Top Right", "Dashboard Position", options=["Top Right","Top Left","Bottom Right","Bottom Left"], group=grp_vis)
+i_col_pos      = input.color(color.new(#00e676, 0),   "Positive Gamma Color", group=grp_vis)
+i_col_neg      = input.color(color.new(#ff1744, 0),   "Negative Gamma Color", group=grp_vis)
+i_col_cwall    = input.color(color.new(#29b6f6, 0),   "Call Wall Color",      group=grp_vis)
+i_col_pwall    = input.color(color.new(#ef5350, 0),   "Put Wall Color",       group=grp_vis)
+i_col_flip     = input.color(color.new(#ffd600, 0),   "Zero Gamma Color",     group=grp_vis)
+i_col_maxgex   = input.color(color.new(#ce93d8, 0),   "Max Gamma Color",      group=grp_vis)
+
+// ============================================================
+// ─── SECTION 2: MATHEMATICAL FUNCTIONS
+// ============================================================
+
+// Standard Normal PDF: φ(x) = (1/√(2π)) × e^(-x²/2)
+norm_pdf(x) =>
+    math.exp(-0.5 * x * x) / math.sqrt(2.0 * math.pi)
+
+// Standard Normal CDF: Φ(x) — Hart approximation
+norm_cdf(x) =>
+    t = 1.0 / (1.0 + 0.2316419 * math.abs(x))
+    d = 0.3989422820 * math.exp(-x * x / 2.0)
+    p = d * t * (0.3193815302 + t * (-0.3565637813 + t * (1.7814779372 + t * (-1.8212559978 + t * 1.3302744929))))
+    x >= 0 ? 1.0 - p : p
+
+// Black-Scholes d1
+bs_d1(S, K, r, q, sigma, T) =>
+    T_safe = math.max(T, 0.00001)
+    sigma_safe = math.max(sigma, 0.001)
+    (math.log(S / K) + (r - q + 0.5 * sigma_safe * sigma_safe) * T_safe) / (sigma_safe * math.sqrt(T_safe))
+
+// Black-Scholes Gamma (European, continuous dividend)
+// Γ = e^(-qT) × φ(d1) / (S × σ × √T)
+bs_gamma(S, K, r, q, sigma, T) =>
+    T_safe = math.max(T, 0.00001)
+    sigma_safe = math.max(sigma, 0.001)
+    if S <= 0 or K <= 0 or sigma_safe <= 0 or T_safe <= 0
+        0.0
+    else
+        d1 = bs_d1(S, K, r, q, sigma_safe, T_safe)
+        math.exp(-q * T_safe) * norm_pdf(d1) / (S * sigma_safe * math.sqrt(T_safe))
+
+// Lognormal OI proxy weight
+// Models OI concentration as lognormal around ATM with user-defined width
+// w(K) = LN(K; μ=ln(S), σ=oi_width) — unnormalized weight
+lognorm_weight(K, S, oi_width_pct) =>
+    oi_width_pct_safe = math.max(oi_width_pct, 0.001)
+    sigma_ln = oi_width_pct_safe
+    mu_ln = math.log(math.max(S, 0.001))
+    ln_k = math.log(math.max(K, 0.001))
+    math.exp(-0.5 * ((ln_k - mu_ln) / sigma_ln) * ((ln_k - mu_ln) / sigma_ln))
+
+// GEX for one strike, one side
+// GEX = Γ × OI_estimate × Multiplier × S² × 0.01
+gex_strike(gamma_val, oi_est, mult, S) =>
+    gamma_val * oi_est * mult * S * S * 0.01
+
+// Convert T in years based on expiration mode
+t_years_from_dte(dte_days, exp_mode, custom_wt) =>
+    base_T = math.max(dte_days / 365.0, 0.00001)
+    if exp_mode == "Equal Weight"
+        base_T
+    else if exp_mode == "Time-Weighted"
+        // Weight = 1/√T (inverse of time weighting reduces far-dated gamma)
+        base_T
+    else if exp_mode == "0DTE Emphasized"
+        base_T * 0.5   // Compress T to emphasize 0DTE-like behavior
+    else // Custom
+        base_T * math.max(custom_wt, 0.001)
+
+// ============================================================
+// ─── SECTION 3: IV RETRIEVAL
+// ============================================================
+
+// Attempt to pull VXN (Nasdaq-100 Volatility) or VIX as IV proxy.
+// These are INDEX volatility measures, not per-strike IV.
+// They represent approximate ATM IV for near-term options.
+// LABEL: ESTIMATED / PROXY IV
+
+raw_vxn = request.security("CBOE:VXN", timeframe.period, close, lookahead=barmerge.lookahead_off)
+raw_vix = request.security("CBOE:VIX", timeframe.period, close, lookahead=barmerge.lookahead_off)
+
+iv_used = switch i_iv_source
+    "VXN"       => not na(raw_vxn) ? raw_vxn / 100.0 : i_manual_iv
+    "VIX"       => not na(raw_vix) ? raw_vix / 100.0 : i_manual_iv
+    "Manual"    => i_manual_iv
+    => // ATM-Approx: rough estimate from recent OHLC range (very rough proxy)
+        recent_range = ta.highest(high, 20) - ta.lowest(low, 20)
+        math.max(recent_range / close * math.sqrt(252.0 / 20.0), 0.05)
+
+iv_available = (i_iv_source == "VXN" and not na(raw_vxn)) or
+               (i_iv_source == "VIX" and not na(raw_vix)) or
+               (i_iv_source == "Manual") or
+               (i_iv_source == "ATM-Approx")
+
+// ============================================================
+// ─── SECTION 4: NDX → NQ MAPPING
+// ============================================================
+
+// For NQ/MNQ trading, options are typically on NDX or QQQ.
+// We need to map option-strike levels back to NQ price space.
+// This mapping is APPROXIMATE — NQ and NDX are correlated but not identical.
+
+ndx_close = request.security("NASDAQ:NDX", timeframe.period, close, lookahead=barmerge.lookahead_off)
+qqq_close = request.security("NASDAQ:QQQ", timeframe.period, close, lookahead=barmerge.lookahead_off)
+
+S = close  // Current chart price (NQ or whatever is charted)
+
+mapping_ratio = switch i_ndx_nq_map
+    "Auto Ratio"    => (not na(ndx_close) and ndx_close > 0 and S > 0) ? S / ndx_close : 1.0
+    "Manual Factor" => i_manual_ratio
+    =>               1.0  // No Mapping
+
+mapping_offset = i_ndx_nq_map == "Manual Factor" ? i_manual_offset : 0.0
+
+// Apply mapping: NQ_level = NDX_level × ratio + offset
+// (Used when converting option strikes from NDX space to NQ space)
+map_to_chart(ndx_level) =>
+    ndx_level * mapping_ratio + mapping_offset
+
+// ============================================================
+// ─── SECTION 5: CORE GEX CALCULATION ENGINE
+// ============================================================
+// IMPORTANT: This is ESTIMATED GEX using parametric OI proxy.
+// It is NOT real option-chain data.
+// Results scale with i_total_oi which is user-estimated.
+
+// ── Time parameters ────────────────────────────────────────
+T_full   = t_years_from_dte(i_avg_dte, i_exp_mode, i_custom_wt)
+T_0dte   = math.max(i_0dte_min_t, 0.002)  // ~0.7 days to prevent div-by-zero
+
+r_rate   = i_rate
+q_yield  = i_div_yield
+sigma    = math.max(iv_used, 0.01)
+mult     = i_multiplier
+
+// ── Strike grid ────────────────────────────────────────────
+// Center on ATM, round to nearest strike interval
+atm_strike = math.round(S / i_strike_int) * i_strike_int
+n_strikes  = i_num_strikes  // strikes each side
+
+// Total strikes = 2*n + 1
+total_strikes = 2 * n_strikes + 1
+
+// ── OI Distribution ────────────────────────────────────────
+// Lognormal weights, normalized so sum = 1
+// Call OI concentrated above ATM, Put OI below ATM (typical skew)
+// put_weight_fraction controls asymmetry
+
+call_oi_total = i_total_oi * (1.0 - i_put_skew)
+put_oi_total  = i_total_oi * i_put_skew
+
+// ── Normalization pass ─────────────────────────────────────
+// Sum lognormal weights across all strikes
+call_weight_sum = 0.0
+put_weight_sum  = 0.0
+
+// Use call-side concentration slightly above ATM (typical market maker positioning)
+// Put-side concentration slightly below ATM
+call_center = S * 1.01
+put_center  = S * 0.99
+
+for i = -n_strikes to n_strikes
+    K = atm_strike + i * i_strike_int
+    if K > 0
+        // Calls: above-ATM OI concentration
+        cw = K > S * 0.98 ? lognorm_weight(K, call_center, i_oi_skew * 0.8) : lognorm_weight(K, call_center, i_oi_skew)
+        // Puts: below-ATM OI concentration
+        pw = K < S * 1.02 ? lognorm_weight(K, put_center,  i_oi_skew * 0.8) : lognorm_weight(K, put_center,  i_oi_skew)
+        call_weight_sum := call_weight_sum + cw
+        put_weight_sum  := put_weight_sum  + pw
+
+call_weight_sum := math.max(call_weight_sum, 0.000001)
+put_weight_sum  := math.max(put_weight_sum,  0.000001)
+
+// ── Main GEX arrays ────────────────────────────────────────
+var float[] strike_arr   = array.new_float(0)
+var float[] net_gex_arr  = array.new_float(0)
+var float[] call_gex_arr = array.new_float(0)
+var float[] put_gex_arr  = array.new_float(0)
+var float[] net_gex_0dte = array.new_float(0)
+
+array.clear(strike_arr)
+array.clear(net_gex_arr)
+array.clear(call_gex_arr)
+array.clear(put_gex_arr)
+array.clear(net_gex_0dte)
+
+total_net_gex    = 0.0
+total_call_gex   = 0.0
+total_put_gex    = 0.0
+total_net_gex_0d = 0.0
+
+// ── Dealer Sign Convention ─────────────────────────────────
+// Standard: Dealers SHORT calls (negative gamma exposure to dealers)
+//           Dealers LONG puts  (positive gamma exposure to dealers)
+// From market's net perspective:
+//   Call GEX contributes negative net gamma when dealer is short
+//   Put  GEX contributes positive net gamma when dealer is long
+call_sign = switch i_dealer_conv
+    "Standard (Dealer Short Calls / Long Puts)"  => -1.0
+    "Reverse (Dealer Long Calls / Short Puts)"   =>  1.0
+    =>  1.0  // Net Absolute: show raw
+
+put_sign = switch i_dealer_conv
+    "Standard (Dealer Short Calls / Long Puts)"  =>  1.0
+    "Reverse (Dealer Long Calls / Short Puts)"   => -1.0
+    =>  1.0  // Net Absolute: show raw
+
+// ── Per-Strike Calculation Loop ────────────────────────────
+for i = -n_strikes to n_strikes
+    K = float(atm_strike + i * i_strike_int)
+    if K > 0 and S > 0
+        // Normalized OI estimate per strike
+        cw        = K > S * 0.98 ? lognorm_weight(K, call_center, i_oi_skew * 0.8) : lognorm_weight(K, call_center, i_oi_skew)
+        pw        = K < S * 1.02 ? lognorm_weight(K, put_center,  i_oi_skew * 0.8) : lognorm_weight(K, put_center,  i_oi_skew)
+        oi_call_k = call_oi_total * (cw / call_weight_sum)
+        oi_put_k  = put_oi_total  * (pw / put_weight_sum)
+
+        // Full chain gamma (using average DTE)
+        gamma_c  = bs_gamma(S, K, r_rate, q_yield, sigma, T_full)
+        gamma_p  = bs_gamma(S, K, r_rate, q_yield, sigma, T_full)
+
+        // GEX per side
+        gex_c = gex_strike(gamma_c, oi_call_k, mult, S) * call_sign
+        gex_p = gex_strike(gamma_p, oi_put_k,  mult, S) * put_sign
+
+        net_k = gex_c + gex_p
+
+        // 0DTE gamma (same strikes, but T = 0DTE minimum)
+        gamma_c_0d = bs_gamma(S, K, r_rate, q_yield, sigma, T_0dte)
+        gamma_p_0d = bs_gamma(S, K, r_rate, q_yield, sigma, T_0dte)
+        gex_c_0d   = gex_strike(gamma_c_0d, oi_call_k * i_0dte_weight, mult, S) * call_sign
+        gex_p_0d   = gex_strike(gamma_p_0d, oi_put_k  * i_0dte_weight, mult, S) * put_sign
+        net_0d_k   = gex_c_0d + gex_p_0d
+
+        array.push(strike_arr,   K)
+        array.push(call_gex_arr, gex_c)
+        array.push(put_gex_arr,  gex_p)
+        array.push(net_gex_arr,  net_k)
+        array.push(net_gex_0dte, net_0d_k)
+
+        total_net_gex    := total_net_gex    + net_k
+        total_call_gex   := total_call_gex   + gex_c
+        total_put_gex    := total_put_gex    + gex_p
+        total_net_gex_0d := total_net_gex_0d + net_0d_k
+
+n_arr = array.size(strike_arr)
+
+// ============================================================
+// ─── SECTION 6: KEY LEVEL IDENTIFICATION
+// ============================================================
+
+// ── Call Wall: strike with largest absolute call GEX ──────
+call_wall_strike  = S
+call_wall_gex_max = 0.0
+for j = 0 to n_arr - 1
+    cg_abs = math.abs(array.get(call_gex_arr, j))
+    if cg_abs > call_wall_gex_max
+        call_wall_gex_max := cg_abs
+        call_wall_strike  := array.get(strike_arr, j)
+
+// ── Put Wall: strike with largest absolute put GEX ────────
+put_wall_strike  = S
+put_wall_gex_max = 0.0
+for j = 0 to n_arr - 1
+    pg_abs = math.abs(array.get(put_gex_arr, j))
+    if pg_abs > put_wall_gex_max
+        put_wall_gex_max := pg_abs
+        put_wall_strike  := array.get(strike_arr, j)
+
+// Map to chart coordinates
+call_wall_mapped = map_to_chart(call_wall_strike)
+put_wall_mapped  = map_to_chart(put_wall_strike)
+
+// ── Max Gamma Strike: largest |Net GEX| ───────────────────
+max_gex_strike  = S
+max_gex_abs     = 0.0
+for j = 0 to n_arr - 1
+    ng_abs = math.abs(array.get(net_gex_arr, j))
+    if ng_abs > max_gex_abs
+        max_gex_abs    := ng_abs
+        max_gex_strike := array.get(strike_arr, j)
+
+max_gex_mapped = map_to_chart(max_gex_strike)
+
+// ── Zero Gamma (Gamma Flip) ────────────────────────────────
+// Find strike where Net GEX changes sign using linear interpolation.
+// This is the mathematically correct approach, not a midpoint.
+zero_gamma_level = float(na)
+zero_found = false
+for j = 0 to n_arr - 2
+    gex_j    = array.get(net_gex_arr, j)
+    gex_j1   = array.get(net_gex_arr, j + 1)
+    strike_j  = array.get(strike_arr, j)
+    strike_j1 = array.get(strike_arr, j + 1)
+    // Sign change detected
+    if (gex_j < 0 and gex_j1 > 0) or (gex_j > 0 and gex_j1 < 0)
+        if not zero_found
+            // Linear interpolation: K_flip = K_j + (K_j1-K_j) × |GEX_j| / (|GEX_j| + |GEX_j1|)
+            weight = math.abs(gex_j) / (math.abs(gex_j) + math.abs(gex_j1) + 0.000001)
+            zero_gamma_level := strike_j + (strike_j1 - strike_j) * weight
+            zero_found := true
+
+zero_gamma_mapped = zero_found ? map_to_chart(zero_gamma_level) : na
+
+// ── Gamma Regime ───────────────────────────────────────────
+is_positive_gamma = total_net_gex > 0
+regime_str        = is_positive_gamma ? "POSITIVE GAMMA" : "NEGATIVE GAMMA"
+
+// ── Major Zone Threshold ───────────────────────────────────
+abs_gex_arr = array.new_float(n_arr)
+for j = 0 to n_arr - 1
+    array.set(abs_gex_arr, j, math.abs(array.get(net_gex_arr, j)))
+sorted_abs = array.copy(abs_gex_arr)
+array.sort(sorted_abs, order.descending)
+
+percentile_idx = math.min(math.round(n_arr * i_threshold_pct / 100.0), n_arr - 1)
+major_threshold = percentile_idx >= 0 and percentile_idx < n_arr ? array.get(sorted_abs, percentile_idx) : 0.0
+
+// ── Distance Calculations ──────────────────────────────────
+atr14      = ta.atr(14)
+dist_flip  = zero_found ? S - zero_gamma_mapped : na
+dist_cwall = S - call_wall_mapped
+dist_pwall = S - put_wall_mapped
+dist_maxg  = S - max_gex_mapped
+
+format_distance(d) =>
+    if na(d)
+        "N/A"
+    else if i_dist_format == "Points"
+        str.tostring(math.round(d, 1)) + " pts"
+    else if i_dist_format == "Percent"
+        str.tostring(math.round(d / S * 100.0, 2)) + "%"
+    else  // ATR
+        str.tostring(math.round(d / atr14, 2)) + " ATR"
+
+// ── GEX Formatting ─────────────────────────────────────────
+format_gex(v) =>
+    abs_v = math.abs(v)
+    sign_s = v >= 0 ? "+" : "-"
+    if abs_v >= 1.0e9
+        sign_s + "$" + str.tostring(math.round(abs_v / 1.0e9, 2)) + "B"
+    else if abs_v >= 1.0e6
+        sign_s + "$" + str.tostring(math.round(abs_v / 1.0e6, 1)) + "M"
+    else
+        sign_s + "$" + str.tostring(math.round(abs_v / 1000.0, 0)) + "K"
+
+// ── GEX Change (bar-to-bar) ────────────────────────────────
+prev_total_gex = nz(ta.valuewhen(barstate.isconfirmed, total_net_gex, 1), total_net_gex)
+gex_change     = total_net_gex - prev_total_gex
+gex_increasing = gex_change > 0
+
+// ============================================================
+// ─── SECTION 7: VISUALIZATION — LINES AND LABELS
+// ============================================================
+
+ls = switch i_line_style
+    "Solid"  => line.style_solid
+    "Dashed" => line.style_dashed
+    =>         line.style_dotted
+
+// Helper to draw/update persistent lines safely
+// We use varip arrays to manage persistent line objects
+var line line_cwall  = na
+var line line_pwall  = na
+var line line_flip   = na
+var line line_maxgex = na
+
+var label lbl_cwall  = na
+var label lbl_pwall  = na
+var label lbl_flip   = na
+var label lbl_maxgex = na
+var label lbl_regime = na
+
+// Delete and recreate on last bar only to avoid label overflow
+if barstate.islast
+    // ── Call Wall Line ──────────────────────────────────────
+    if i_show_cwall
+        line.delete(line_cwall)
+        line_cwall := line.new(bar_index - 50, call_wall_mapped, bar_index + 20, call_wall_mapped,
+             color=i_col_cwall, width=2, style=ls, xloc=xloc.bar_index)
+        if i_show_labels
+            label.delete(lbl_cwall)
+            lbl_cwall := label.new(bar_index + 5, call_wall_mapped,
+                 "CALL WALL\n" + str.tostring(math.round(call_wall_mapped, 0)) + " | Dist: " + format_distance(dist_cwall),
+                 color=color.new(i_col_cwall, 80), textcolor=i_col_cwall,
+                 style=label.style_label_left, size=size.small, xloc=xloc.bar_index)
+
+    // ── Put Wall Line ───────────────────────────────────────
+    if i_show_pwall
+        line.delete(line_pwall)
+        line_pwall := line.new(bar_index - 50, put_wall_mapped, bar_index + 20, put_wall_mapped,
+             color=i_col_pwall, width=2, style=ls, xloc=xloc.bar_index)
+        if i_show_labels
+            label.delete(lbl_pwall)
+            lbl_pwall := label.new(bar_index + 5, put_wall_mapped,
+                 "PUT WALL\n" + str.tostring(math.round(put_wall_mapped, 0)) + " | Dist: " + format_distance(dist_pwall),
+                 color=color.new(i_col_pwall, 80), textcolor=i_col_pwall,
+                 style=label.style_label_left, size=size.small, xloc=xloc.bar_index)
+
+    // ── Zero Gamma Line ─────────────────────────────────────
+    if i_show_flip and not na(zero_gamma_mapped)
+        line.delete(line_flip)
+        line_flip := line.new(bar_index - 50, zero_gamma_mapped, bar_index + 20, zero_gamma_mapped,
+             color=i_col_flip, width=2, style=line.style_solid, xloc=xloc.bar_index)
+        if i_show_labels
+            label.delete(lbl_flip)
+            lbl_flip := label.new(bar_index + 5, zero_gamma_mapped,
+                 "ZERO GAMMA (FLIP)\n" + str.tostring(math.round(zero_gamma_mapped, 0)) + " | Dist: " + format_distance(dist_flip),
+                 color=color.new(i_col_flip, 80), textcolor=i_col_flip,
+                 style=label.style_label_left, size=size.small, xloc=xloc.bar_index)
+
+    // ── Max Gamma Line ──────────────────────────────────────
+    if i_show_maxgex
+        line.delete(line_maxgex)
+        line_maxgex := line.new(bar_index - 50, max_gex_mapped, bar_index + 20, max_gex_mapped,
+             color=i_col_maxgex, width=1, style=ls, xloc=xloc.bar_index)
+        if i_show_labels
+            label.delete(lbl_maxgex)
+            lbl_maxgex := label.new(bar_index + 5, max_gex_mapped,
+                 "MAX GAMMA\n" + str.tostring(math.round(max_gex_mapped, 0)),
+                 color=color.new(i_col_maxgex, 80), textcolor=i_col_maxgex,
+                 style=label.style_label_left, size=size.small, xloc=xloc.bar_index)
+
+    // ── Regime Label ────────────────────────────────────────
+    if i_show_labels
+        label.delete(lbl_regime)
+        reg_col = is_positive_gamma ? i_col_pos : i_col_neg
+        lbl_regime := label.new(bar_index - 5, high * 1.0005,
+             regime_str,
+             color=color.new(reg_col, 70), textcolor=reg_col,
+             style=label.style_label_down, size=size.normal, xloc=xloc.bar_index)
+
+// ============================================================
+// ─── SECTION 8: GAMMA PROFILE VISUALIZATION
+// ============================================================
+// Draws a horizontal bar chart of GEX by strike on the right side of price
+// Only rendered on the last bar to avoid performance issues
+
+var label[] profile_labels = array.new<label>()
+
+if barstate.islast and i_profile_show
+    // Clear previous profile labels
+    for old_lbl in profile_labels
+        label.delete(old_lbl)
+    array.clear(profile_labels)
+
+    // Find max absolute net GEX for scaling
+    max_abs_net = 0.0
+    for j = 0 to n_arr - 1
+        max_abs_net := math.max(max_abs_net, math.abs(array.get(net_gex_arr, j)))
+    max_abs_net := math.max(max_abs_net, 0.000001)
+
+    // Profile character width in bar_index units
+    profile_width_bars = math.round(i_profile_width * 20)
+
+    // Draw profile: only show strikes nearest to price (show top 2*n_strikes range)
+    for j = 0 to n_arr - 1
+        K       = array.get(strike_arr, j)
+        net_g   = array.get(net_gex_arr, j)
+        K_chart = map_to_chart(K)
+
+        // Limit visual range to 15 strikes each side for readability
+        if math.abs(K - atm_strike) <= 15 * i_strike_int
+            is_major = math.abs(net_g) >= major_threshold
+            bar_len  = math.round(math.abs(net_g) / max_abs_net * profile_width_bars)
+            bar_len  := math.max(bar_len, 1)
+
+            // Build bar string
+            bar_char = is_major ? "█" : (math.abs(net_g) > major_threshold * 0.5 ? "▓" : "░")
+            bar_str  = ""
+            for _b = 1 to math.min(bar_len, 20)
+                bar_str := bar_str + bar_char
+
+            bar_col  = net_g >= 0 ? color.new(i_col_pos, is_major ? 20 : 50) : color.new(i_col_neg, is_major ? 20 : 50)
+
+            lbl = label.new(bar_index + 25, K_chart,
+                 str.tostring(math.round(K_chart, 0)) + "  " + bar_str,
+                 color=#00000000, textcolor=bar_col,
+                 style=label.style_label_left, size=size.small, xloc=xloc.bar_index)
+            array.push(profile_labels, lbl)
+
+// ============================================================
+// ─── SECTION 9: MAJOR GAMMA ZONE BOXES
+// ============================================================
+var box[] zone_boxes = array.new<box>()
+
+if barstate.islast and i_show_zones
+    for old_box in zone_boxes
+        box.delete(old_box)
+    array.clear(zone_boxes)
+
+    for j = 0 to n_arr - 1
+        net_g  = array.get(net_gex_arr, j)
+        K      = array.get(strike_arr, j)
+        K_chart = map_to_chart(K)
+        if math.abs(net_g) >= major_threshold and math.abs(K - atm_strike) <= 15 * i_strike_int
+            zone_col   = net_g >= 0 ? color.new(i_col_pos, 88) : color.new(i_col_neg, 88)
+            border_col = net_g >= 0 ? color.new(i_col_pos, 60) : color.new(i_col_neg, 60)
+            half = i_strike_int * mapping_ratio * 0.45
+            b = box.new(bar_index - 30, K_chart + half, bar_index + 22, K_chart - half,
+                 bgcolor=zone_col, border_color=border_col, border_width=1, xloc=xloc.bar_index)
+            array.push(zone_boxes, b)
+
+// ============================================================
+// ─── SECTION 10: DASHBOARD
+// ============================================================
+
+if barstate.islast and i_show_dash
+    var table dash = na
+    table.delete(dash)
+
+    pos = switch i_dash_pos
+        "Top Right"    => position.top_right
+        "Top Left"     => position.top_left
+        "Bottom Left"  => position.bottom_left
+        =>              position.bottom_right
+
+    dash := table.new(pos, 2, 18, bgcolor=color.new(#0d0d0f, 10), border_color=color.new(#444444, 80), border_width=1, frame_color=color.new(#555555, 60), frame_width=1)
+    reg_col = is_positive_gamma ? i_col_pos : i_col_neg
+    gex_col = total_net_gex >= 0 ? i_col_pos : i_col_neg
+
+    // Header
+    table.cell(dash, 0, 0,  "GAMMA STRUCTURE",           text_color=#ffffff, bgcolor=color.new(#1a1a2e, 20), text_halign=text.align_center, text_size=size.normal)
+    table.cell(dash, 0, 1,  "⚠ ESTIMATED GEX — PROXY DATA", text_color=#ffd600, bgcolor=color.new(#1a1005, 40), text_halign=text.align_center, text_size=size.tiny)
+
+    // Regime
+    table.cell(dash, 0, 2,  "Regime", text_color=#aaaaaa, text_halign=text.align_left,   text_size=size.small)
+    table.cell(dash, 1, 2,  regime_str, text_color=reg_col, text_halign=text.align_right, text_size=size.small)
+
+    // GEX totals
+    table.cell(dash, 0, 3,  "Est. Net GEX", text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 3,  format_gex(total_net_gex), text_color=gex_col, text_halign=text.align_right, text_size=size.small)
+
+    table.cell(dash, 0, 4,  "Est. Call GEX", text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 4,  format_gex(total_call_gex), text_color=i_col_cwall, text_halign=text.align_right, text_size=size.small)
+
+    table.cell(dash, 0, 5,  "Est. Put GEX",  text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 5,  format_gex(total_put_gex),  text_color=i_col_pwall, text_halign=text.align_right, text_size=size.small)
+
+    table.cell(dash, 0, 6,  "GEX Change",    text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+    chg_str = format_gex(gex_change) + (gex_increasing ? " ↑" : " ↓")
+    table.cell(dash, 1, 6,  chg_str, text_color= gex_increasing ? i_col_pos : i_col_neg, text_halign=text.align_right, text_size=size.small)
+
+    // 0DTE
+    if i_0dte_enable
+        table.cell(dash, 0, 7,  "Est. 0DTE GEX", text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+        gex_0d_col = total_net_gex_0d >= 0 ? i_col_pos : i_col_neg
+        table.cell(dash, 1, 7,  format_gex(total_net_gex_0d), text_color=gex_0d_col, text_halign=text.align_right, text_size=size.small)
+    else
+        table.cell(dash, 0, 7,  "0DTE GEX",      text_color=#555555, text_halign=text.align_left, text_size=size.small)
+        table.cell(dash, 1, 7,  "DISABLED",       text_color=#555555, text_halign=text.align_right, text_size=size.small)
+
+    // Divider row
+    table.cell(dash, 0, 8,  "─────────────────", text_color=#333333, text_halign=text.align_center, text_size=size.tiny)
+
+    // Key levels
+    table.cell(dash, 0, 9,  "Call Wall",     text_color=i_col_cwall, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 9,  str.tostring(math.round(call_wall_mapped, 0)) + "  [" + format_distance(dist_cwall) + "]",
+         text_color=i_col_cwall, text_halign=text.align_right, text_size=size.small)
+
+    table.cell(dash, 0, 10, "Max Gamma",     text_color=i_col_maxgex, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 10, str.tostring(math.round(max_gex_mapped, 0)) + "  [" + format_distance(dist_maxg) + "]",
+         text_color=i_col_maxgex, text_halign=text.align_right, text_size=size.small)
+
+    zero_str = zero_found ? str.tostring(math.round(zero_gamma_mapped, 0)) + "  [" + format_distance(dist_flip) + "]" : "Not Found in Range"
+    table.cell(dash, 0, 11, "Zero Gamma",    text_color=i_col_flip, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 11, zero_str, text_color=i_col_flip, text_halign=text.align_right, text_size=size.small)
+
+    table.cell(dash, 0, 12, "Put Wall",      text_color=i_col_pwall, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 12, str.tostring(math.round(put_wall_mapped, 0)) + "  [" + format_distance(dist_pwall) + "]",
+         text_color=i_col_pwall, text_halign=text.align_right, text_size=size.small)
+
+    // Divider row
+    table.cell(dash, 0, 13, "─────────────────", text_color=#333333, text_halign=text.align_center, text_size=size.tiny)
+
+    // IV info
+    iv_src_str = i_iv_source == "VXN" ? (not na(raw_vxn) ? "VXN ✓" : "VXN (FAIL→Manual)") :
+                 i_iv_source == "VIX" ? (not na(raw_vix) ? "VIX ✓" : "VIX (FAIL→Manual)") :
+                 i_iv_source == "Manual" ? "Manual" : "ATM-Approx"
+    table.cell(dash, 0, 14, "IV Source/Value",  text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 14, iv_src_str + " " + str.tostring(math.round(sigma * 100, 1)) + "%",
+         text_color=#cccccc, text_halign=text.align_right, text_size=size.small)
+
+    // Mapping info
+    map_str = switch i_ndx_nq_map
+        "Auto Ratio"    => "Auto ×" + str.tostring(math.round(mapping_ratio, 4))
+        "Manual Factor" => "Manual ×" + str.tostring(i_manual_ratio)
+        =>               "None"
+    table.cell(dash, 0, 15, "NDX→NQ Map",    text_color=#aaaaaa, text_halign=text.align_left,  text_size=size.small)
+    table.cell(dash, 1, 15, map_str,          text_color=#cccccc, text_halign=text.align_right, text_size=size.small)
+
+    // Divider
+    table.cell(dash, 0, 16, "─────────────────", text_color=#333333, text_halign=text.align_center, text_size=size.tiny)
+
+    // Data quality panel
+    data_status = "PROXY — ESTIMATED"
+    oi_status   = "PARAMETRIC MODEL"
+    iv_status   = i_iv_source == "Manual" ? "MANUAL INPUT" : (iv_available ? "EXTERNAL INDEX" : "FALLBACK")
+    gamma_status= "BS CALCULATED ✓"
+
+    table.cell(dash, 0, 17, "DATA: " + data_status + "\nOI: " + oi_status + "\nIV: " + iv_status + "\nΓ: " + gamma_status,
+         text_color=#ffd600, text_halign=text.align_center, text_size=size.tiny,
+         bgcolor=color.new(#1a1000, 50))
+
+// ============================================================
+// ─── SECTION 11: PRICE-LEVEL INTERACTION SIGNALS
+// ============================================================
+
+// Gamma Wall Test: price enters major zone
+price_at_cwall = math.abs(close - call_wall_mapped) < i_strike_int * mapping_ratio * 0.6
+price_at_pwall = math.abs(close - put_wall_mapped)  < i_strike_int * mapping_ratio * 0.6
+
+// Gamma Flip Cross
+prev_close      = close[1]
+flip_cross_up   = zero_found and not na(zero_gamma_mapped) and prev_close < zero_gamma_mapped and close >= zero_gamma_mapped
+flip_cross_down = zero_found and not na(zero_gamma_mapped) and prev_close > zero_gamma_mapped and close <= zero_gamma_mapped
+
+// Gamma regime change (uses total_net_gex sign change)
+prev_regime_int = ta.valuewhen(barstate.isconfirmed, total_net_gex > 0 ? 1 : 0, 1)
+prev_regime_pos = na(prev_regime_int) ? (total_net_gex > 0 ? 1 : 0) : prev_regime_int
+regime_changed  = (total_net_gex > 0 ? 1 : 0) != prev_regime_pos
+
+// Candle markers (non-repainting — only confirmed on close)
+plotshape(i_sig_walltest and price_at_cwall and barstate.isconfirmed,
+     title="Call Wall Test", style=shape.triangledown, location=location.abovebar,
+     color=i_col_cwall, size=size.tiny, text="CW")
+
+plotshape(i_sig_walltest and price_at_pwall and barstate.isconfirmed,
+     title="Put Wall Test", style=shape.triangleup, location=location.belowbar,
+     color=i_col_pwall, size=size.tiny, text="PW")
+
+plotshape(i_sig_flip and flip_cross_up and barstate.isconfirmed,
+     title="Flip Reclaim", style=shape.circle, location=location.belowbar,
+     color=i_col_flip, size=size.small, text="▲FLIP")
+
+plotshape(i_sig_flip and flip_cross_down and barstate.isconfirmed,
+     title="Flip Loss", style=shape.circle, location=location.abovebar,
+     color=i_col_flip, size=size.small, text="▼FLIP")
+
+plotshape(i_sig_regime and regime_changed and barstate.isconfirmed,
+     title="Regime Change", style=shape.diamond, location=location.belowbar,
+     color=is_positive_gamma ? i_col_pos : i_col_neg, size=size.small, text="REGIME")
+
+// ============================================================
+// ─── SECTION 12: BACKGROUND GAMMA REGIME SHADING
+// ============================================================
+bgcolor(is_positive_gamma ?
+     color.new(i_col_pos, 97) :
+     color.new(i_col_neg, 97),
+     title="Gamma Regime Background")
+
+// ============================================================
+// ─── SECTION 13: ALERTS
+// ============================================================
+
+alertcondition(price_at_cwall,
+     title="Price at Call Wall",
+     message="GEX: Price entering estimated Call Wall zone. Level: {{close}}")
+
+alertcondition(price_at_pwall,
+     title="Price at Put Wall",
+     message="GEX: Price entering estimated Put Wall zone. Level: {{close}}")
+
+alertcondition(flip_cross_up,
+     title="Zero Gamma Reclaim (Bullish Flip)",
+     message="GEX: Price crossed ABOVE Zero Gamma. Potential regime shift to Positive Gamma. Level: {{close}}")
+
+alertcondition(flip_cross_down,
+     title="Zero Gamma Loss (Bearish Flip)",
+     message="GEX: Price crossed BELOW Zero Gamma. Potential regime shift to Negative Gamma. Level: {{close}}")
+
+alertcondition(regime_changed,
+     title="Gamma Regime Change",
+     message="GEX: Gamma regime changed (Positive <-> Negative). Check dashboard for current regime. Level: {{close}}")
+
+alertcondition(math.abs(gex_change) > math.abs(prev_total_gex) * 0.15,
+     title="Large GEX Change (>15%)",
+     message="GEX: Estimated GEX changed by more than 15%. Monitor for structural shift.")
+
+// ============================================================
+// ─── SECTION 14: ADDITIONAL PLOTS (for external strategy use)
+// ============================================================
+// These plots allow external scripts / Pine strategies to access
+// gamma structure levels as series values.
+
+plot(call_wall_mapped,  "Call Wall Level",  color=color.new(i_col_cwall, 80),  display=display.data_window)
+plot(put_wall_mapped,   "Put Wall Level",   color=color.new(i_col_pwall, 80),  display=display.data_window)
+plot(zero_gamma_mapped, "Zero Gamma Level", color=color.new(i_col_flip, 80),   display=display.data_window)
+plot(max_gex_mapped,    "Max Gamma Level",  color=color.new(i_col_maxgex, 80), display=display.data_window)
+plot(total_net_gex,     "Total Est. Net GEX (raw)", color=#00000000, display=display.data_window)
+plot(total_net_gex_0d,  "Total Est. 0DTE GEX (raw)", color=#00000000, display=display.data_window)
+
+// ============================================================
+// END OF SCRIPT
+// ============================================================
+// LIMITATIONS SUMMARY:
+// ─────────────────────────────────────────────────────────────
+// 1. No real option chain data available in Pine Script v6.
+// 2. OI is parametric (lognormal proxy). Adjust i_total_oi to
+//    calibrate magnitude to real-world estimates.
+// 3. IV is from VXN/VIX index (ATM proxy, not per-strike).
+// 4. Zero Gamma is interpolated from modeled GEX, not real data.
+// 5. Call/Put Walls reflect modeled OI concentration, not actual.
+// 6. NQ/NDX mapping via auto-ratio is approximate.
+// 7. Historical GEX tracking is limited to bar-to-bar delta.
+// 8. 0DTE GEX is modeled by compressing T, not real 0DTE OI.
+// 9. All output should be treated as STRUCTURAL CONTEXT only.
+// 10. Never trade solely on estimated GEX levels.
+// ─────────────────────────────────────────────────────────────

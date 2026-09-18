@@ -1,0 +1,180 @@
+strategy(title='[MavRix] BOT', shorttitle='[MavRix] BOT', overlay=true, pyramiding=1, initial_capital=2000, currency=currency.USD)
+useHA = false
+useAltTF = input(true,'Use 1Hr For Confirmation')
+tf = '60'
+showSLTP = input(true,'Show SL/TP')
+
+
+useTimeWindow = input(false, title="Use Time Window?")
+tradeSession = input("0930-1600", title="Trading Session (e.g., 0930-1600)")
+inSession = time(period, tradeSession)
+inTradingWindow = useTimeWindow ? not na(inSession) : true
+
+zigzag() =>
+    _isUp = close >= open
+    _isDown = close <= open
+    _direction = _isUp[1] and _isDown ? -1 : _isDown[1] and _isUp ? 1 : nz(_direction[1])
+    _zigzag = _isUp[1] and _isDown and _direction[1] != -1 ? highest(2) : _isDown[1] and _isUp and _direction[1] != 1 ? lowest(2) : na
+
+_ticker = useHA ? heikenashi(tickerid) : tickerid
+sz = useAltTF ? (change(time(tf)) != 0 ? security(_ticker, tf, zigzag()[1], false) : na) : zigzag()
+
+x = valuewhen(sz, sz, 4) 
+a = valuewhen(sz, sz, 3) 
+b = valuewhen(sz, sz, 2) 
+c = valuewhen(sz, sz, 1) 
+d = valuewhen(sz, sz, 0)
+
+xab = (abs(b-a)/abs(x-a))
+xad = (abs(a-d)/abs(x-a))
+abc = (abs(b-c)/abs(a-b))
+bcd = (abs(c-d)/abs(b-c))
+
+isBat(_mode)=>
+    _xab = xab >= 0.382 and xab <= 0.5
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.618 and bcd <= 2.618
+    _xad = xad <= 0.618 and xad <= 1.000    // 0.886
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAntiBat(_mode)=>
+    _xab = xab >= 0.500 and xab <= 0.886    // 0.618
+    _abc = abc >= 1.000 and abc <= 2.618    // 1.13 --> 2.618
+    _bcd = bcd >= 1.618 and bcd <= 2.618    // 2.0  --> 2.618
+    _xad = xad >= 0.886 and xad <= 1.000    // 1.13
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAltBat(_mode)=>
+    _xab = xab <= 0.382
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 2.0 and bcd <= 3.618
+    _xad = xad <= 1.13
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isButterfly(_mode)=>
+    _xab = xab <= 0.786
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.618 and bcd <= 2.618
+    _xad = xad >= 1.27 and xad <= 1.618
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAntiButterfly(_mode)=>
+    _xab = xab >= 0.236 and xab <= 0.886    // 0.382 - 0.618
+    _abc = abc >= 1.130 and abc <= 2.618    // 1.130 - 2.618
+    _bcd = bcd >= 1.000 and bcd <= 1.382    // 1.27
+    _xad = xad >= 0.500 and xad <= 0.886    // 0.618 - 0.786
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isABCD(_mode)=>
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.13 and bcd <= 2.618
+    _abc and _bcd and (_mode == 1 ? d < c : d > c)
+
+isGartley(_mode)=>
+    _xab = xab >= 0.5 and xab <= 0.618 // 0.618
+    _abc = abc >= 0.382 and abc <= 0.886
+    _bcd = bcd >= 1.13 and bcd <= 2.618
+    _xad = xad >= 0.75 and xad <= 0.875 // 0.786
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAntiGartley(_mode)=>
+    _xab = xab >= 0.500 and xab <= 0.886    // 0.618 -> 0.786
+    _abc = abc >= 1.000 and abc <= 2.618    // 1.130 -> 2.618
+    _bcd = bcd >= 1.500 and bcd <= 5.000    // 1.618
+    _xad = xad >= 1.000 and xad <= 5.000    // 1.272
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isCrab(_mode)=>
+    _xab = xab >= 0.500 and xab <= 0.875    // 0.886
+    _abc = abc >= 0.382 and abc <= 0.886    
+    _bcd = bcd >= 2.000 and bcd <= 5.000    // 3.618
+    _xad = xad >= 1.382 and xad <= 5.000    // 1.618
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAntiCrab(_mode)=>
+    _xab = xab >= 0.250 and xab <= 0.500    // 0.276 -> 0.446
+    _abc = abc >= 1.130 and abc <= 2.618    // 1.130 -> 2.618
+    _bcd = bcd >= 1.618 and bcd <= 2.618    // 1.618 -> 2.618
+    _xad = xad >= 0.500 and xad <= 0.750    // 0.618
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isShark(_mode)=>
+    _xab = xab >= 0.500 and xab <= 0.875    // 0.5 --> 0.886
+    _abc = abc >= 1.130 and abc <= 1.618    //
+    _bcd = bcd >= 1.270 and bcd <= 2.240    //
+    _xad = xad >= 0.886 and xad <= 1.130    // 0.886 --> 1.13
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isAntiShark(_mode)=>
+    _xab = xab >= 0.382 and xab <= 0.875    // 0.446 --> 0.618
+    _abc = abc >= 0.500 and abc <= 1.000    // 0.618 --> 0.886
+    _bcd = bcd >= 1.250 and bcd <= 2.618    // 1.618 --> 2.618
+    _xad = xad >= 0.500 and xad <= 1.250    // 1.130 --> 1.130
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+is5o(_mode)=>
+    _xab = xab >= 1.13 and xab <= 1.618
+    _abc = abc >= 1.618 and abc <= 2.24
+    _bcd = bcd >= 0.5 and bcd <= 0.625 // 0.5
+    _xad = xad >= 0.0 and xad <= 0.236 // negative?
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isWolf(_mode)=>
+    _xab = xab >= 1.27 and xab <= 1.618
+    _abc = abc >= 0 and abc <= 5
+    _bcd = bcd >= 1.27 and bcd <= 1.618
+    _xad = xad >= 0.0 and xad <= 5
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isHnS(_mode)=>
+    _xab = xab >= 2.0 and xab <= 10
+    _abc = abc >= 0.90 and abc <= 1.1
+    _bcd = bcd >= 0.236 and bcd <= 0.88
+    _xad = xad >= 0.90 and xad <= 1.1
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isConTria(_mode)=>
+    _xab = xab >= 0.382 and xab <= 0.618
+    _abc = abc >= 0.382 and abc <= 0.618
+    _bcd = bcd >= 0.382 and bcd <= 0.618
+    _xad = xad >= 0.236 and xad <= 0.764
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+isExpTria(_mode)=>
+    _xab = xab >= 1.236 and xab <= 1.618
+    _abc = abc >= 1.000 and abc <= 1.618
+    _bcd = bcd >= 1.236 and bcd <= 2.000
+    _xad = xad >= 2.000 and xad <= 2.236
+    _xab and _abc and _bcd and _xad and (_mode == 1 ? d < c : d > c)
+
+//-------------------------------------------------------------------------------------------------------------------------------------------------------------
+fib_range = abs(d-c)
+fib_0236 = not showSLTP ? na : d > c ? d-(fib_range*0.236):d+(fib_range*0.236)
+fib_0618 = not showSLTP ? na : d > c ? d-(fib_range*0.618):d+(fib_range*0.618)
+fib_n0236 = not showSLTP ? na : d > c ? d-(fib_range*-0.236):d+(fib_range*-0.236)
+
+f_last_fib(_rate)=>d > c ? d-(fib_range*_rate):d+(fib_range*_rate)
+
+target01_trade_size = input(title='Trade size:', type=float, defval=1.00)
+target01_ew_rate = 0.236
+target01_tp_rate = 0.618
+target01_sl_rate = -0.236
+
+buy_patterns_00 = isABCD(1) or isBat(1) or isAltBat(1) or isButterfly(1) or isGartley(1) or isCrab(1) or isShark(1) or is5o(1) or isWolf(1) or isHnS(1) or isConTria(1) or isExpTria(1)
+buy_patterns_01 = isAntiBat(1) or isAntiButterfly(1) or isAntiGartley(1) or isAntiCrab(1) or isAntiShark(1)
+sel_patterns_00 = isABCD(-1) or isBat(-1) or isAltBat(-1) or isButterfly(-1) or isGartley(-1) or isCrab(-1) or isShark(-1) or is5o(-1) or isWolf(-1) or isHnS(-1) or isConTria(-1) or isExpTria(-1)
+sel_patterns_01 = isAntiBat(-1) or isAntiButterfly(-1) or isAntiGartley(-1) or isAntiCrab(-1) or isAntiShark(-1)
+
+target01_buy_entry = (buy_patterns_00 or buy_patterns_01) and close <= f_last_fib(target01_ew_rate) and inTradingWindow
+target01_buy_close = high >= f_last_fib(target01_tp_rate) or low <= f_last_fib(target01_sl_rate)
+target01_sel_entry = (sel_patterns_00 or sel_patterns_01) and close >= f_last_fib(target01_ew_rate) and inTradingWindow
+target01_sel_close = low <= f_last_fib(target01_tp_rate) or high >= f_last_fib(target01_sl_rate)
+
+strategy.entry('target01_buy', long=strategy.long, qty=target01_trade_size, comment='buy 01', when=target01_buy_entry)
+strategy.close('target01_buy', when=target01_buy_close)
+strategy.entry('target01_sell', long=strategy.short, qty=target01_trade_size, comment='sell 01', when=target01_sel_entry)
+strategy.close('target01_sell', when=target01_sel_close)
+
+plot(title='TP', series=fib_0618,color=fib_0618 != fib_0618[1] ? na : green)
+plot(title='ENTRY', series=fib_0236, color=fib_0236 != fib_0236[1] ? na : white)
+plot(title='SL', series=fib_n0236, color=fib_n0236 != fib_n0236[1] ? na : red)

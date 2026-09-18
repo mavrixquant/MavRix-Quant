@@ -1,0 +1,464 @@
+//@version=5
+indicator("[MavRix] Pivot Flow", overlay=true, max_labels_count=500, max_lines_count=500)
+
+// ══════════════════════════════════════════════════════════════════
+//  INPUTS
+// ══════════════════════════════════════════════════════════════════
+
+// ── LTF PCZ and PL ───────────────────────────────────────────────
+ltfEnable      = input.bool(true,  "Show PCZ and PL",      group="LTF PCZ and PL", tooltip="Shows Pivot Cluster Zones and Pivot Lines for the current timeframe")
+ltfColor       = input.color(color.new(#636363, 90), "PCZ/PL Color",        group="LTF PCZ and PL")
+ltfBorderWidth = input.int(1,  "PCZ/PL Border Width",  group="LTF PCZ and PL", minval=1, maxval=5)
+ltfMaxZones    = input.int(10, "PCZ/PL Zones",         group="LTF PCZ and PL", minval=1, maxval=10)
+ltfPivotSrc    = input.string("High/Low", "Source",    group="LTF PCZ and PL", options=["High/Low", "Close/Open"], tooltip="Source for pivot point calculation")
+
+// ── HTF PCZ and PL ───────────────────────────────────────────────
+htfEnable      = input.bool(false, "Show HTF PCZ and PL",  group="HTF PCZ and PL")
+htfTF          = input.timeframe("60", "HTF Timeframe",    group="HTF PCZ and PL")
+htfColor       = input.color(color.new(#636363, 90), "HTF PCZ/PL Color",    group="HTF PCZ and PL")
+htfBorderWidth = input.int(1,  "HTF PCZ/PL Border Width", group="HTF PCZ and PL", minval=1, maxval=5)
+htfMaxZones    = input.int(10, "HTF PCZ/PL Zones",        group="HTF PCZ and PL", minval=1, maxval=10)
+pdEnable       = input.bool(true, "Show Premium/Discount Zones", group="HTF PCZ and PL", tooltip="Shows Premium and Discount zones between HTF PCZ/PL levels based on VWAP bias")
+
+// ── Other Settings ───────────────────────────────────────────────
+engulfEnable   = input.bool(true,  "Show Engulfs",       inline="eng", group="Other Settings")
+engulfBullCol  = input.color(color.new(#26a69a, 0), " |   Bull", inline="eng", group="Other Settings")
+engulfBearCol  = input.color(color.new(#ef5350, 0), "  Bear",    inline="eng", group="Other Settings")
+
+// ── VWAP ─────────────────────────────────────────────────────────
+vwapEnable     = input.bool(true,    "Show VWAP",    group="VWAP")
+vwapSrcType    = input.string("HLC3","VWAP Source",  group="VWAP", options=["Close", "HLC3", "OHLC4"])
+vwapCol        = input.color(color.lime, "VWAP Color", group="VWAP")
+vwapThick      = input.int(2, "VWAP Width",  group="VWAP", minval=1, maxval=5)
+vwapLineStyle  = input.string("Solid","VWAP Style",  group="VWAP", options=["Solid", "Dashed", "Dotted"])
+biasBars       = input.int(10, "VWAP Confirmation Candles", group="VWAP", minval=3,  maxval=50,  tooltip="Number of previous candles to analyze for VWAP bias")
+biasThreshold  = input.int(70, "VWAP Bias Threshold %",     group="VWAP", minval=50, maxval=100, tooltip="Percentage of candles that must be above/below VWAP to confirm bias")
+
+// ── OPEN & H/L ───────────────────────────────────────────────────
+grpDWM        = "OPEN & H/L"
+showTDO       = input.bool(false, "True D Open",  group=grpDWM)
+showDO        = input.bool(false, "D Open",       group=grpDWM, inline="dOpen")
+showDHL       = input.bool(false, "High/Low",     group=grpDWM, inline="dOpen")
+dCol          = input.color(color.gray, "",        group=grpDWM, inline="dOpen")
+showWO        = input.bool(false, "W Open",       group=grpDWM, inline="wOpen")
+showWHL       = input.bool(false, "High/Low",     group=grpDWM, inline="wOpen")
+wCol          = input.color(color.gray, "",        group=grpDWM, inline="wOpen")
+dwmStyle      = input.string("Solid","Line Style", group=grpDWM, options=["Solid","Dotted","Dashed"])
+dwmStyle     := dwmStyle == "Solid" ? line.style_solid : dwmStyle == "Dotted" ? line.style_dotted : line.style_dashed
+dwmWidth      = input.int(1, "Line Width", group=grpDWM)
+
+// ── Sessions ─────────────────────────────────────────────────────
+showAsia      = input.bool(false, "Asia",     group="Sessions", inline="as")
+asiaCol       = input.color(color.new(#636363, 90), " ",  group="Sessions", inline="as")
+asiaSession   = input.session("1700-0200",                " ",  group="Sessions", inline="as")
+showLondon    = input.bool(false, "London",   group="Sessions", inline="ln")
+londonCol     = input.color(color.new(#636363, 90), " ",  group="Sessions", inline="ln")
+londonSession = input.session("0200-0400",                " ",  group="Sessions", inline="ln")
+showNY        = input.bool(false, "New York", group="Sessions", inline="ny")
+nyCol         = input.color(color.new(#636363, 90), " ",  group="Sessions", inline="ny")
+nySession     = input.session("0800-1000",                " ",  group="Sessions", inline="ny")
+
+// ══════════════════════════════════════════════════════════════════
+//  SESSION BACKGROUNDS
+// ══════════════════════════════════════════════════════════════════
+
+bgcolor(showAsia   and not na(time(timeframe.period, asiaSession))   ? asiaCol   : na)
+bgcolor(showLondon and not na(time(timeframe.period, londonSession)) ? londonCol : na)
+bgcolor(showNY     and not na(time(timeframe.period, nySession))     ? nyCol     : na)
+
+// ══════════════════════════════════════════════════════════════════
+//  VWAP
+// ══════════════════════════════════════════════════════════════════
+
+vwapSrc   = vwapSrcType == "Close" ? close : vwapSrcType == "HLC3" ? hlc3 : ohlc4
+vwapValue = ta.vwap(vwapSrc)
+
+aboveCnt = 0
+belowCnt = 0
+for n = 0 to biasBars - 1
+    if close[n] > vwapValue[n]
+        aboveCnt += 1
+    else if close[n] < vwapValue[n]
+        belowCnt += 1
+
+var int vwapBias = 0
+if (aboveCnt / biasBars) * 100 >= biasThreshold
+    vwapBias := 1
+else if (belowCnt / biasBars) * 100 >= biasThreshold
+    vwapBias := -1
+
+vwapPlotStyle = vwapLineStyle == "Solid" ? plot.style_line : vwapLineStyle == "Dashed" ? plot.style_linebr : plot.style_circles
+plot(vwapEnable ? vwapValue : na, "VWAP", color=vwapCol, linewidth=vwapThick, style=vwapPlotStyle)
+
+// ══════════════════════════════════════════════════════════════════
+//  ENGULFING PATTERNS
+// ══════════════════════════════════════════════════════════════════
+
+c2Up = close[2] > open[2]
+c2Dn = close[2] < open[2]
+c1Up = close[1] > open[1]
+c1Dn = close[1] < open[1]
+c0Up = close    > open
+c0Dn = close    < open
+
+e1Bull = c1Dn and c0Up and close >= open[1]
+e1Bear = c1Up and c0Dn and close <= open[1]
+e2Bull = c2Dn and c1Up and c0Up  and close >= open[2]
+e2Bear = c2Up and c1Dn and c0Dn  and close <= open[2]
+
+isBullEngulf = engulfEnable and (e1Bull or e2Bull)
+isBearEngulf = engulfEnable and (e1Bear or e2Bear)
+
+barcolor(vwapBias ==  1 and isBullEngulf ? engulfBullCol : na)
+barcolor(vwapBias == -1 and isBearEngulf ? engulfBearCol : na)
+
+alertcondition(vwapBias ==  1 and isBullEngulf, "Bullish Engulf", "Bullish Engulf Signal")
+alertcondition(vwapBias == -1 and isBearEngulf, "Bearish Engulf", "Bearish Engulf Signal")
+
+// ══════════════════════════════════════════════════════════════════
+//  PCZ/PL CORE ENGINE  (reusable — runs once for LTF, once via
+//  request.security for HTF)
+// ══════════════════════════════════════════════════════════════════
+
+SR_PERIOD   = 10
+SR_CHANNEL  = 5
+SR_LOOKBACK = 290
+SR_MIN_STR  = 1
+
+float ltfHiSrc = ltfPivotSrc == "High/Low" ? high : math.max(close, open)
+float ltfLoSrc = ltfPivotSrc == "High/Low" ? low  : math.min(close, open)
+
+float pHigh = ta.pivothigh(ltfHiSrc, SR_PERIOD, SR_PERIOD)
+float pLow  = ta.pivotlow(ltfLoSrc,  SR_PERIOD, SR_PERIOD)
+
+rangeH  = ta.highest(300)
+rangeL  = ta.lowest(300)
+chanW   = (rangeH - rangeL) * SR_CHANNEL / 100
+
+var float[] pvPrices = array.new_float(0)
+var float[] pvBars   = array.new_float(0)
+
+if bool(pHigh) or bool(pLow)
+    array.unshift(pvPrices, bool(pHigh) ? pHigh : pLow)
+    array.unshift(pvBars, float(bar_index))
+    for k = array.size(pvPrices) - 1 to 0
+        if bar_index - array.get(pvBars, k) > SR_LOOKBACK
+            array.pop(pvPrices)
+            array.pop(pvBars)
+            continue
+        break
+
+calcCluster(idx) =>
+    float lo = array.get(pvPrices, idx)
+    float hi = lo
+    int   str = 0
+    for k = 0 to array.size(pvPrices) - 1
+        float p   = array.get(pvPrices, k)
+        float spn = p <= hi ? hi - p : p - lo
+        if spn <= chanW
+            lo  := p <= hi ? math.min(lo, p) : lo
+            hi  := p >  hi ? math.max(hi, p) : hi
+            str += 20
+    [hi, lo, str]
+
+var float[] srLevels = array.new_float(20, 0)
+
+swapPair(a, b) =>
+    tH = array.get(srLevels, b * 2)
+    tL = array.get(srLevels, b * 2 + 1)
+    array.set(srLevels, b * 2,     array.get(srLevels, a * 2))
+    array.set(srLevels, b * 2 + 1, array.get(srLevels, a * 2 + 1))
+    array.set(srLevels, a * 2,     tH)
+    array.set(srLevels, a * 2 + 1, tL)
+
+if (bool(pHigh) or bool(pLow))
+    rawSR  = array.new_float(0)
+    strArr = array.new_float(10, 0)
+    total  = array.size(pvPrices)
+
+    for i = 0 to total - 1
+        [h, l, s] = calcCluster(i)
+        array.push(rawSR, float(s))
+        array.push(rawSR, h)
+        array.push(rawSR, l)
+
+    for i = 0 to total - 1
+        zh = array.get(rawSR, i * 3 + 1)
+        zl = array.get(rawSR, i * 3 + 2)
+        cnt = 0
+        for b = 0 to SR_LOOKBACK
+            if (high[b] <= zh and high[b] >= zl) or (low[b] <= zh and low[b] >= zl)
+                cnt += 1
+        array.set(rawSR, i * 3, array.get(rawSR, i * 3) + float(cnt))
+
+    array.fill(srLevels, 0)
+    dest = 0
+
+    for i = 0 to total - 1
+        bestVal = -1.0
+        bestIdx = -1
+        for k = 0 to total - 1
+            sv = array.get(rawSR, k * 3)
+            if sv > bestVal and sv >= SR_MIN_STR * 20
+                bestVal := sv
+                bestIdx := k
+        if bestIdx >= 0
+            bh = array.get(rawSR, bestIdx * 3 + 1)
+            bl = array.get(rawSR, bestIdx * 3 + 2)
+            array.set(srLevels, dest * 2,     bh)
+            array.set(srLevels, dest * 2 + 1, bl)
+            array.set(strArr, dest, array.get(rawSR, bestIdx * 3))
+            for k = 0 to total - 1
+                kh = array.get(rawSR, k * 3 + 1)
+                kl = array.get(rawSR, k * 3 + 2)
+                if (kh <= bh and kh >= bl) or (kl <= bh and kl >= bl)
+                    array.set(rawSR, k * 3, -1)
+            dest += 1
+            if dest >= 10
+                break
+
+    for i = 0 to 8
+        for j = i + 1 to 9
+            if array.get(strArr, j) > array.get(strArr, i)
+                tmp = array.get(strArr, j)
+                array.set(strArr, j, array.get(strArr, i))
+                array.set(strArr, i, tmp)
+                swapPair(i, j)
+
+// ══════════════════════════════════════════════════════════════════
+//  DRAW LTF PCZ/PL  (current timeframe)
+// ══════════════════════════════════════════════════════════════════
+
+if ltfEnable
+    var box[]   ltfBoxes  = array.new_box(10)
+    var label[] ltfLabels = array.new_label(10)
+
+    ltfBorderCol = color.new(
+         color.rgb(color.r(ltfColor), color.g(ltfColor), color.b(ltfColor)), 75)
+
+    for i = 0 to math.min(ltfMaxZones - 1, 9)
+        box.delete(array.get(ltfBoxes, i))
+        label.delete(array.get(ltfLabels, i))
+
+        zh = array.get(srLevels, i * 2)
+        zl = array.get(srLevels, i * 2 + 1)
+
+        if zh != 0 and zl != 0
+            mid = (zh + zl) / 2
+            array.set(ltfBoxes,  i, box.new(bar_index, zh, bar_index + 1, zl,
+                 border_color=ltfBorderCol, border_width=ltfBorderWidth,
+                 extend=extend.both, bgcolor=ltfColor))
+            array.set(ltfLabels, i, label.new(bar_index + 2, mid, "",
+                 style=label.style_none, color=color.new(color.white, 100),
+                 textcolor=color.gray, size=size.normal))
+
+// ══════════════════════════════════════════════════════════════════
+//  HTF PCZ/PL  (user-selected higher timeframe)
+// ══════════════════════════════════════════════════════════════════
+
+htfLevels = request.security(syminfo.tickerid, htfTF, srLevels, lookahead=barmerge.lookahead_off)
+
+var string htfSigPrev = ""
+htfSigNow = ""
+if not na(htfLevels)
+    for i = 0 to math.min(htfMaxZones - 1, 9)
+        htfSigNow += str.tostring(array.get(htfLevels, i * 2)) + "|" +
+                     str.tostring(array.get(htfLevels, i * 2 + 1)) + ";"
+
+var int frameCount = 0
+frameCount += 1
+htfChanged  = htfSigNow != htfSigPrev
+needsRedraw = htfChanged or (frameCount % 5 == 0)
+
+if (htfEnable or pdEnable) and needsRedraw and barstate.islast and not na(htfLevels)
+    if htfChanged
+        htfSigPrev := htfSigNow
+
+    // ── Draw HTF boxes ─────────────────────────────────────────────
+    var box[] htfBoxArr = array.new_box()
+    if array.size(htfBoxArr) > 0
+        for i = 0 to array.size(htfBoxArr) - 1
+            box.delete(array.get(htfBoxArr, i))
+        array.clear(htfBoxArr)
+
+    if htfEnable
+        for i = 0 to math.min(htfMaxZones - 1, 9)
+            zh = array.get(htfLevels, i * 2)
+            zl = array.get(htfLevels, i * 2 + 1)
+            if zh != 0 and zl != 0
+                b = box.new(bar_index, zh, bar_index + 1, zl,
+                     border_color=htfColor, border_width=htfBorderWidth,
+                     extend=extend.both, bgcolor=htfColor)
+                array.push(htfBoxArr, b)
+
+    // ── Draw Premium / Discount zones between HTF levels ──────────
+    var box[]  pdBoxArr  = array.new_box()
+    var line[] pdLineArr = array.new_line()
+
+    if array.size(pdBoxArr) > 0
+        for i = 0 to array.size(pdBoxArr) - 1
+            box.delete(array.get(pdBoxArr, i))
+        array.clear(pdBoxArr)
+    if array.size(pdLineArr) > 0
+        for i = 0 to array.size(pdLineArr) - 1
+            line.delete(array.get(pdLineArr, i))
+        array.clear(pdLineArr)
+
+    if pdEnable
+        // Collect valid zone midpoints and their indices
+        mids = array.new_float(0)
+        for i = 0 to math.min(htfMaxZones - 1, 9)
+            zh = array.get(htfLevels, i * 2)
+            zl = array.get(htfLevels, i * 2 + 1)
+            if zh != 0 and zl != 0
+                array.push(mids, (zh + zl) / 2)
+                array.push(mids, float(i))
+
+        zCount = array.size(mids) / 2
+
+        // Sort zone pairs by midpoint descending (bubble sort)
+        if zCount > 1
+            for i = 0 to zCount - 2
+                for j = 0 to zCount - 2 - i
+                    m1 = array.get(mids, j * 2)
+                    m2 = array.get(mids, (j + 1) * 2)
+                    if m1 < m2
+                        array.set(mids, j * 2,       m2)
+                        array.set(mids, (j + 1) * 2, m1)
+                        ti = array.get(mids, j * 2 + 1)
+                        array.set(mids, j * 2 + 1,       array.get(mids, (j + 1) * 2 + 1))
+                        array.set(mids, (j + 1) * 2 + 1, ti)
+
+        // For each adjacent pair of HTF zones, draw a PD zone between them
+        if zCount > 1
+            for i = 0 to zCount - 2
+                upIdx = int(array.get(mids, i * 2 + 1))
+                dnIdx = int(array.get(mids, (i + 1) * 2 + 1))
+
+                upHigh = array.get(htfLevels, upIdx * 2)
+                upLow  = array.get(htfLevels, upIdx * 2 + 1)
+                dnHigh = array.get(htfLevels, dnIdx * 2)
+                dnLow  = array.get(htfLevels, dnIdx * 2 + 1)
+
+                // Equilibrium = midpoint between the two HTF zones
+                equil = (upLow + dnHigh) / 2
+
+                float zTop = na
+                float zBot = na
+                color zCol = color.new(color.gray, 80)
+
+                if vwapBias == 1
+                    zTop := equil
+                    zBot := dnLow
+                    zCol := color.new(#00ff00, 95)
+                else if vwapBias == -1
+                    zTop := upHigh
+                    zBot := equil
+                    zCol := color.new(#ff0000, 95)
+                else
+                    zTop := equil + (upHigh - dnLow) * 0.02
+                    zBot := equil - (upHigh - dnLow) * 0.02
+                    zCol := color.new(#ff9800, 90)
+
+                nb = box.new(bar_index, zTop, bar_index, zBot,
+                     border_color=color.new(zCol, 100), border_width=0,
+                     extend=extend.both, bgcolor=zCol)
+                array.push(pdBoxArr, nb)
+
+                if vwapBias == 1
+                    nl = line.new(bar_index, dnLow, bar_index, dnLow,
+                         color=color.green, style=line.style_solid, width=1, extend=extend.both)
+                    array.push(pdLineArr, nl)
+                else if vwapBias == -1
+                    nl = line.new(bar_index, upHigh, bar_index, upHigh,
+                         color=color.red, style=line.style_solid, width=1, extend=extend.both)
+                    array.push(pdLineArr, nl)
+
+// ══════════════════════════════════════════════════════════════════
+//  DWM  (Daily / Weekly Open, High/Low)
+// ══════════════════════════════════════════════════════════════════
+
+type TFData
+    string label
+    float  o
+    float  h
+    float  l
+    float  ph
+    float  pl
+
+type TFLines
+    array<line>  hi
+    array<line>  lo
+    array<label> hiLbl
+    array<label> loLbl
+
+var float     tdoLevel = na
+var line[]    tdoLn    = array.new_line()
+var label[]   tdoLbl   = array.new_label()
+
+var TFData    dData    = TFData.new("D", na, na, na, na, na)
+var TFData    wData    = TFData.new("W", na, na, na, na, na)
+var TFLines   dHL      = TFLines.new(array.new_line(), array.new_line(), array.new_label(), array.new_label())
+var TFLines   wHL      = TFLines.new(array.new_line(), array.new_line(), array.new_label(), array.new_label())
+var line[]    dOLn     = array.new_line()
+var line[]    wOLn     = array.new_line()
+var label[]   dOLbl    = array.new_label()
+var label[]   wOLbl    = array.new_label()
+
+invis = color.new(color.white, 100)
+newDay = hour == 0 and minute == 0
+if newDay
+    tdoLevel := open
+
+refreshTFData(TFData d) =>
+    if ta.change(time(d.label))
+        d.ph := d.h
+        d.pl := d.l
+        d.o  := open
+        d.h  := high
+        d.l  := low
+    else
+        d.h := math.max(high, d.h)
+        d.l := math.min(low,  d.l)
+
+paintOpen(string tf, bool show, array<line> lns, array<label> lbls, TFData d, color c) =>
+    if show
+        if lns.size() > 0
+            lns.get(0).set_x2(bar_index)
+            lbls.get(0).set_x(bar_index)
+        if ta.change(time(tf))
+            lns.unshift(line.new(bar_index, d.o, bar_index, d.o, style=dwmStyle, width=dwmWidth, color=c))
+            lbls.unshift(label.new(bar_index, d.o, tf + "O", style=label.style_label_left, color=invis, textcolor=c))
+
+paintHL(string tf, bool show, TFLines tl, TFData d, color c) =>
+    if show
+        if tl.hi.size() > 0
+            tl.hi.get(0).set_x2(bar_index)
+            tl.lo.get(0).set_x2(bar_index)
+            tl.hiLbl.get(0).set_x(bar_index)
+            tl.loLbl.get(0).set_x(bar_index)
+        if ta.change(time(tf))
+            tl.hi.unshift(line.new(bar_index, d.ph, bar_index, d.ph, style=dwmStyle, width=dwmWidth, color=c))
+            tl.lo.unshift(line.new(bar_index, d.pl, bar_index, d.pl, style=dwmStyle, width=dwmWidth, color=c))
+            tl.hiLbl.unshift(label.new(bar_index, d.ph, "P" + tf + "H", style=label.style_label_left, color=invis, textcolor=c))
+            tl.loLbl.unshift(label.new(bar_index, d.pl, "P" + tf + "L", style=label.style_label_left, color=invis, textcolor=c))
+
+paintTDO(bool show, array<line> lns, array<label> lbls, float px, color c) =>
+    if show and not na(px)
+        if lns.size() > 0
+            lns.get(0).set_x2(bar_index)
+            lbls.get(0).set_x(bar_index)
+        if newDay
+            lns.unshift(line.new(bar_index, px, bar_index, px, style=dwmStyle, width=dwmWidth, color=c))
+            lbls.unshift(label.new(bar_index, px, "TDO", style=label.style_label_left, color=invis, textcolor=c))
+
+if showDO or showDHL
+    refreshTFData(dData)
+if showWO or showWHL
+    refreshTFData(wData)
+
+paintTDO(showTDO,  tdoLn,  tdoLbl,  tdoLevel, dCol)
+paintOpen("D", showDO,  dOLn,  dOLbl,  dData, dCol)
+paintOpen("W", showWO,  wOLn,  wOLbl,  wData, wCol)
+paintHL("D",   showDHL, dHL,   dData,  dCol)
+paintHL("W",   showWHL, wHL,   wData,  wCol)

@@ -1,0 +1,245 @@
+//@version=6
+// =============================================================================
+// [MavRix] Absorptions — Mathematical Absorption Detector (MAD)
+// -----------------------------------------------------------------------------
+// Detects statistically unusual selling/buying pressure that produces
+// abnormally little price progress, followed by rejection and recovery.
+//
+// IMPORTANT HONESTY NOTE:
+// On the Essential plan, Volume Delta is a lower-timeframe-derived
+// approximation (intrabar close-vs-open classification of volume), not true
+// price-level footprint/order-flow data. This script therefore reports
+// "mathematical evidence consistent with absorption," not certainty.
+// =============================================================================
+indicator("[MavRix] Absorptions", overlay = true, max_labels_count = 500, max_lines_count = 200)
+
+// ============================== INPUTS ======================================
+grpDelta   = "Delta / Volume Flow"
+deltaTF        = input.timeframe("1",  "Lower TF for Delta Approximation", group = grpDelta,
+                 tooltip = "Must be lower than the chart timeframe. Finer = more precise, less history available.")
+deltaLookback = input.int(300, "Delta Z-Score Lookback (bars)", minval = 20, group = grpDelta)
+volLookback    = input.int(20,  "RVOL Lookback (bars, SMA of Volume)", minval = 5, group = grpDelta)
+atrLookback    = input.int(14,  "ATR Lookback (bars)", minval = 2, group = grpDelta)
+
+grpThresh  = "Absorption Filters (Gates)"
+deltaZThresh  = input.float(1.3,  "Minimum |Delta Z-Score|", minval = 0.0, step = 0.1, group = grpThresh,
+                 tooltip = "How many standard deviations from the mean the delta must be. 2 = strong, 3 = extreme.")
+minRVOL       = input.float(1.15,  "Minimum RVOL (Relative Volume)", minval = 0.0, step = 0.1, group = grpThresh)
+maxEfficiency = input.float(0.55, "Maximum Price Efficiency (|Close-Open|/ATR)", minval = 0.0, step = 0.05, group = grpThresh,
+                 tooltip = "Lower = more effort with less price result = more absorption-like.")
+minRejection  = input.float(25.0, "Minimum Rejection %", minval = 0.0, maxval = 100.0, group = grpThresh,
+                 tooltip = "Wick-into-the-pressure-side as % of bar range.")
+minRecovery   = input.float(45.0, "Minimum Recovery %", minval = 0.0, maxval = 100.0, group = grpThresh,
+                 tooltip = "Close location away from the pressure side, as % of bar range.")
+scoreThresh   = input.int(58, "Minimum Absorption Score (0-100)", minval = 0, maxval = 100, group = grpThresh)
+
+grpMode = "Mode"
+direction   = input.string("Both", "Detect", options = ["Buy Only", "Sell Only", "Both"], group = grpMode)
+confirmMode = input.string("Bar Close", "Confirmation Mode",
+             options = ["Bar Close", "Confirmed + Next Bar"], group = grpMode,
+             tooltip = "'Bar Close' signals the moment the absorption bar closes. 'Confirmed + Next Bar' delays the signal one extra bar to minimize any repaint risk.")
+filterMode = input.string("Score Only (Ignore Gates)", "Filter Mode", options = ["Strict", "Score Only (Ignore Gates)"], group = grpMode,
+             tooltip = "Strict: All individual gates (Delta Z, RVOL, Efficiency, Rejection, Recovery) must pass. Score Only: Ignores those gates, uses only the final Absorption Score against the threshold.")
+scoreOnlyType = input.string("Both", "Score Only Type", options = ["Both", "Strong", "Weak"], group = grpMode,
+             tooltip = "Applies when 'Score Only' is selected.\nBoth: Shows all.\nStrong: Shows only Delta Confirmed.\nWeak: Shows only Delta Mismatch.")
+
+grpDisp = "Display"
+showLabels         = input.bool(true, "Show Bubbles (hover for details)", group = grpDisp)
+showTable          = input.bool(false, "Show Live Stats Table", group = grpDisp)
+bubbleBaseSize     = input.string("Normal", "Bubble Base Size", options = ["Small", "Normal", "Large"], group = grpDisp,
+                     tooltip = "Starting size before volume scaling is applied.")
+fillTransparency   = input.int(55, "Bubble Fill Transparency", minval = 0, maxval = 95, group = grpDisp)
+
+buyColor    = input.color(color.new(color.teal, 0),   "Buy Absorption Color",  group = grpDisp)
+sellColor   = input.color(color.new(color.maroon, 0), "Sell Absorption Color", group = grpDisp)
+weakBuyColor  = input.color(color.new(color.blue, 50),   "Weak Buy Color (Delta Mismatch)",  group = grpDisp)
+weakSellColor = input.color(color.new(color.orange, 0), "Weak Sell Color (Delta Mismatch)", group = grpDisp)
+
+// ============================== HELPERS ======================================
+f_clamp(x, lo, hi) =>
+    math.max(lo, math.min(hi, x))
+
+// Maps RVOL -> a discrete label size, then returns [innerSize] where
+f_pickSize(idx) =>
+    idx <= 0 ? size.tiny : idx == 1 ? size.small : idx == 2 ? size.normal : idx == 3 ? size.large : size.huge
+
+f_baseOffset(baseSetting) =>
+    baseSetting == "Small" ? 0 : baseSetting == "Normal" ? 1 : 2
+
+// ============================== DELTA (LTF APPROXIMATION) ===================
+[ltfClose, ltfOpen, ltfVolume] = request.security_lower_tf(syminfo.tickerid, deltaTF, [close, open, volume])
+
+var float buyVol  = 0.0
+var float sellVol = 0.0
+buyVol  := 0.0
+sellVol := 0.0
+
+if array.size(ltfClose) > 0
+    for i = 0 to array.size(ltfClose) - 1
+        c = array.get(ltfClose, i)
+        o = array.get(ltfOpen, i)
+        v = array.get(ltfVolume, i)
+        if c > o
+            buyVol += v
+        else if c < o
+            sellVol += v
+        else
+            buyVol  += v / 2
+            sellVol += v / 2
+
+deltaRaw = array.size(ltfClose) > 0 ? (buyVol - sellVol) : (close >= open ? volume : -volume) // fallback proxy if LTF data unavailable
+
+// ============================== CORE METRICS =================================
+deltaMean = ta.sma(deltaRaw, deltaLookback)
+deltaStd  = ta.stdev(deltaRaw, deltaLookback)
+deltaZ    = deltaStd != 0 ? (deltaRaw - deltaMean) / deltaStd : 0.0
+
+rvol = ta.sma(volume, volLookback) != 0 ? volume / ta.sma(volume, volLookback) : 0.0
+
+atrVal     = ta.atr(atrLookback)
+efficiency = atrVal != 0 ? math.abs(close - open) / atrVal : 0.0
+
+barRange = high - low
+lowerWickRatio = barRange > 0 ? (math.min(open, close) - low) / barRange : 0.0   // relevant for BUY absorption (sellers rejected)
+upperWickRatio = barRange > 0 ? (high - math.max(open, close)) / barRange : 0.0  // relevant for SELL absorption (buyers rejected)
+closeLocation  = barRange > 0 ? (close - low) / barRange : 0.5                    // 1 = closed at high, 0 = closed at low
+
+rejectionPctBuy  = lowerWickRatio * 100
+rejectionPctSell = upperWickRatio * 100
+recoveryPctBuy   = closeLocation * 100          // close near high favors buy absorption
+recoveryPctSell  = (1 - closeLocation) * 100    // close near low favors sell absorption
+
+// ============================== SCORING (0-100) ===============================
+// Component caps: Delta Extremity 25 | Volume 20 | Inefficiency 25 | Rejection 15 | Recovery 15
+f_deltaScore(z) =>
+    f_clamp(math.abs(z) / (deltaZThresh * 2), 0, 1) * 25
+
+f_volScore(rv) =>
+    f_clamp((rv - 1) / (minRVOL * 2 - 1 <= 0 ? 1 : (minRVOL * 2 - 1)), 0, 1) * 20
+
+f_effScore(eff) =>
+    (1 - f_clamp(eff, 0, 1)) * 25
+
+f_rejScore(rejPct) =>
+    f_clamp(rejPct / 100, 0, 1) * 15
+
+f_recScore(recPct) =>
+    f_clamp(recPct / 100, 0, 1) * 15
+
+deltaScorePts = f_deltaScore(deltaZ)
+volScorePts   = f_volScore(rvol)
+effScorePts   = f_effScore(efficiency)
+
+buyRejScore = f_rejScore(rejectionPctBuy)
+buyRecScore = f_recScore(recoveryPctBuy)
+buyScore    = deltaScorePts + volScorePts + effScorePts + buyRejScore + buyRecScore
+
+sellRejScore = f_rejScore(rejectionPctSell)
+sellRecScore = f_recScore(recoveryPctSell)
+sellScore    = deltaScorePts + volScorePts + effScorePts + sellRejScore + sellRecScore
+
+// ============================== DELTA CONFIRMATION ===========================
+// True absorption requires delta to OPPOSE the candle outcome
+buyDeltaConfirmed  = deltaZ < 0   // sellers pressuring but buyers won = real
+sellDeltaConfirmed = deltaZ > 0   // buyers pressuring but sellers won = real
+
+actualBuyColor  = buyDeltaConfirmed  ? buyColor  : weakBuyColor
+actualSellColor = sellDeltaConfirmed ? sellColor : weakSellColor
+
+// ============================== SIGNAL GATES ==================================
+isStrictMode = filterMode == "Strict"
+
+var bool buyCondRaw  = false
+var bool sellCondRaw = false
+
+if isStrictMode
+    buyCondRaw  := deltaZ <= -deltaZThresh and
+                   rvol >= minRVOL and
+                   efficiency <= maxEfficiency and
+                   rejectionPctBuy >= minRejection and
+                   recoveryPctBuy >= minRecovery and
+                   buyScore >= scoreThresh
+    sellCondRaw := deltaZ >= deltaZThresh and
+                   rvol >= minRVOL and
+                   efficiency <= maxEfficiency and
+                   rejectionPctSell >= minRejection and
+                   recoveryPctSell >= minRecovery and
+                   sellScore >= scoreThresh
+else
+    // Score Only: only the dominant side fires — prevents dual bubbles on the same bar
+    buyBase  = buyScore >= scoreThresh and buyScore >= sellScore
+    sellBase = sellScore >= scoreThresh and sellScore > buyScore
+    
+    // Apply the newly requested type filter
+    buyTypeValid  = scoreOnlyType == "Both" or (scoreOnlyType == "Strong" and buyDeltaConfirmed) or (scoreOnlyType == "Weak" and not buyDeltaConfirmed)
+    sellTypeValid = scoreOnlyType == "Both" or (scoreOnlyType == "Strong" and sellDeltaConfirmed) or (scoreOnlyType == "Weak" and not sellDeltaConfirmed)
+
+    buyCondRaw  := buyBase and buyTypeValid
+    sellCondRaw := sellBase and sellTypeValid
+
+buyCond  = confirmMode == "Bar Close" ? buyCondRaw  : buyCondRaw[1]
+sellCond = confirmMode == "Bar Close" ? sellCondRaw : sellCondRaw[1]
+
+buyEnabled  = direction != "Sell Only"
+sellEnabled = direction != "Buy Only"
+
+finalBuy  = buyCond and buyEnabled
+finalSell = sellCond and sellEnabled
+
+// ============================== BUBBLES (hover for details) ==================
+sizeIdx    = int(f_clamp(f_baseOffset(bubbleBaseSize) + math.round(f_clamp((rvol - 1.0) / 1.5, 0.0, 1.0) * 2), 0, 3))
+innerSize  = f_pickSize(sizeIdx)
+
+if showLabels and finalBuy
+    tip = "BUY ABSORPTION\n" +
+         "Delta: " + str.tostring(deltaRaw, "#") + "\n" +
+         "Delta Z: " + str.tostring(deltaZ, "#.##") + "σ\n" +
+         "RVOL: " + str.tostring(rvol, "#.##") + "x\n" +
+         "Efficiency: " + str.tostring(efficiency, "#.##") + "\n" +
+         "Rejection: " + str.tostring(rejectionPctBuy, "#") + "%\n" +
+         "Recovery: " + str.tostring(recoveryPctBuy, "#") + "%\n" +
+         "Score: " + str.tostring(buyScore, "#") + "/100\n" +
+         (buyDeltaConfirmed ? "✅ Delta Confirmed" : "⚠️ Delta Mismatch — Weak Signal")
+
+    label.new(bar_index, low, text = "", tooltip = tip, style = label.style_circle,
+              color = color.new(actualBuyColor, fillTransparency), size = innerSize)
+
+if showLabels and finalSell
+    tip = "SELL ABSORPTION\n" +
+         "Delta: " + str.tostring(deltaRaw, "#") + "\n" +
+         "Delta Z: " + str.tostring(deltaZ, "#.##") + "σ\n" +
+         "RVOL: " + str.tostring(rvol, "#.##") + "x\n" +
+         "Efficiency: " + str.tostring(efficiency, "#.##") + "\n" +
+         "Rejection: " + str.tostring(rejectionPctSell, "#") + "%\n" +
+         "Recovery: " + str.tostring(recoveryPctSell, "#") + "%\n" +
+         "Score: " + str.tostring(sellScore, "#") + "/100\n" +
+         (sellDeltaConfirmed ? "✅ Delta Confirmed" : "⚠️ Delta Mismatch — Weak Signal")
+
+    label.new(bar_index, high, text = "", tooltip = tip, style = label.style_circle,
+              color = color.new(actualSellColor, fillTransparency), size = innerSize)
+
+// ============================== LIVE STATS TABLE ==============================
+var table statTable = table.new(position.top_right, 2, 9, border_width = 1)
+if showTable and barstate.islast
+    table.cell(statTable, 0, 0, "Absorption Metric", bgcolor = color.new(color.gray, 70), text_color = color.white)
+    table.cell(statTable, 1, 0, "Value",      bgcolor = color.new(color.gray, 70), text_color = color.white)
+    table.cell(statTable, 0, 1, "Delta")
+    table.cell(statTable, 1, 1, str.tostring(deltaRaw, "#"))
+    table.cell(statTable, 0, 2, "Delta Z")
+    table.cell(statTable, 1, 2, str.tostring(deltaZ, "#.##") + "σ")
+    table.cell(statTable, 0, 3, "RVOL")
+    table.cell(statTable, 1, 3, str.tostring(rvol, "#.##") + "x")
+    table.cell(statTable, 0, 4, "Efficiency")
+    table.cell(statTable, 1, 4, str.tostring(efficiency, "#.##"))
+    table.cell(statTable, 0, 5, "Buy Score")
+    table.cell(statTable, 1, 5, str.tostring(buyScore, "#") + "/100", text_color = buyColor)
+    table.cell(statTable, 0, 6, "Sell Score")
+    table.cell(statTable, 1, 6, str.tostring(sellScore, "#") + "/100", text_color = sellColor)
+    table.cell(statTable, 0, 7, "Direction")
+    table.cell(statTable, 1, 7, direction)
+    table.cell(statTable, 0, 8, "Filter Mode")
+    table.cell(statTable, 1, 8, filterMode)
+
+// ============================== ALERTS ========================================
+alertcondition(finalBuy,  title = "MavRix Buy Absorption",  message = "[MavRix] Absorptions: Buy Absorption detected on {{ticker}} {{interval}}")
+alertcondition(finalSell, title = "MavRix Sell Absorption", message = "[MavRix] Absorptions: Sell Absorption detected on {{ticker}} {{interval}}")

@@ -1,0 +1,17 @@
+//@version=5
+indicator("[MavRix] Candle Alerts", overlay=true)
+
+// User Input for Custom Timeframe
+selectedTimeframe = input.timeframe("5", title="Select Alert Timeframe")
+
+// Fetch bar index from the target timeframe (fixed 'symbol.tickerid' -> 'syminfo.tickerid')
+targetBarIndex = request.security(syminfo.tickerid, selectedTimeframe, bar_index, lookahead=barmerge.lookahead_off)
+
+// Detect when a bar in the target timeframe has closed
+isTargetCandleClosed = ta.change(targetBarIndex) != 0
+
+// Trigger dynamic alert condition
+alertcondition(isTargetCandleClosed, title="Custom TF Candle Close", message="The {{timeframe}} candle has closed for {{ticker}} at {{close}}!")
+
+// Plot visual shapes on chart when the selected candle closes
+plotshape(isTargetCandleClosed, title="Candle Close Signal", style=shape.triangleup, location=location.belowbar, color=color.blue, size=size.small)

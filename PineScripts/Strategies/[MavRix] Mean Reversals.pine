@@ -1,0 +1,185 @@
+//@version=5
+strategy("[MavRix] Mean Reversals", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, calc_on_every_tick=false)
+
+// ─────────────────────────────────────────────
+//  INPUTS
+// ─────────────────────────────────────────────
+
+meanType = input.string("VWAP", title="Mean Type", options=["VWAP"])
+
+grp_vwap = "VWAP Settings"
+hideVWAP     = input.bool(false,       title="Hide VWAP",           group=grp_vwap)
+anchorPeriod = input.string("Session", title="Anchor Period",       group=grp_vwap,
+                 options=["Session", "Week", "Month", "Quarter", "Year"])
+vwapSrc      = input.source(hlc3,     title="Source",              group=grp_vwap)
+mult2        = input.float(2.0,       title="Band Multiplier #2",  group=grp_vwap, minval=0.1, step=0.1)
+mult3        = input.float(3.0,       title="Band Multiplier #3",  group=grp_vwap, minval=0.1, step=0.1)
+
+grp_strat     = "Strategy Settings"
+disableTrades = input.bool(false, title="Disable Trades (Signals Only)", group=grp_strat)
+
+grp_time      = "Time Window"
+useTimeFilter = input.bool(true,           title="Enable Time Filter", group=grp_time)
+startTime     = input.session("0930-1200", title="Session 1",          group=grp_time)
+useSession2   = input.bool(false,          title="Enable Session 2",   group=grp_time)
+startTime2    = input.session("1300-1500", title="Session 2",          group=grp_time)
+
+
+// ─────────────────────────────────────────────
+//  VWAP + BANDS CALCULATION
+// ─────────────────────────────────────────────
+
+anchorTF = switch anchorPeriod
+    "Session" => "D"
+    "Week"    => "W"
+    "Month"   => "M"
+    "Quarter" => "3M"
+    "Year"    => "12M"
+    => "D"
+
+var float cumVolSrc  = 0.0
+var float cumVol     = 0.0
+var float cumVolSrc2 = 0.0
+
+bool isNewAnchor = timeframe.change(anchorTF)
+
+cumVolSrc  := isNewAnchor ? vwapSrc * volume           : cumVolSrc  + vwapSrc * volume
+cumVol     := isNewAnchor ? volume                     : cumVol     + volume
+cumVolSrc2 := isNewAnchor ? vwapSrc * vwapSrc * volume : cumVolSrc2 + vwapSrc * vwapSrc * volume
+
+vwapVal  = cumVolSrc / cumVol
+variance = math.max(cumVolSrc2 / cumVol - vwapVal * vwapVal, 0.0)
+stdev    = math.sqrt(variance)
+
+upperBand2 = vwapVal + mult2 * stdev
+lowerBand2 = vwapVal - mult2 * stdev
+upperBand3 = vwapVal + mult3 * stdev
+lowerBand3 = vwapVal - mult3 * stdev
+
+
+// ─────────────────────────────────────────────
+//  PLOTS
+// ─────────────────────────────────────────────
+
+plot(hideVWAP ? na : vwapVal,    title="VWAP",         color=color.white,  linewidth=2)
+plot(hideVWAP ? na : upperBand2, title="Upper Band 2", color=color.orange, linewidth=1)
+plot(hideVWAP ? na : lowerBand2, title="Lower Band 2", color=color.orange, linewidth=1)
+plot(hideVWAP ? na : upperBand3, title="Upper Band 3", color=color.red,    linewidth=1)
+plot(hideVWAP ? na : lowerBand3, title="Lower Band 3", color=color.red,    linewidth=1)
+
+
+// ─────────────────────────────────────────────
+//  TIME WINDOW FILTER
+// ─────────────────────────────────────────────
+
+session1Active = not useTimeFilter or time(timeframe.period, startTime)  != 0
+session2Active = useSession2       and time(timeframe.period, startTime2) != 0
+inTimeWindow   = session1Active or session2Active
+
+bgcolor(useTimeFilter and inTimeWindow ? color.new(color.blue, 90) : na, title="Active Window")
+
+
+// ─────────────────────────────────────────────
+//  STRATEGY LOGIC
+// ─────────────────────────────────────────────
+
+var bool  longArmed      = false
+var bool  shortArmed     = false
+var float pendingLongSL  = na
+var float pendingShortSL = na
+var float activeLongSL   = na
+var float activeShortSL  = na
+var line  slLine         = na
+
+// Band 3 touches (wick)
+touchLowerB3 = low  <= lowerBand3
+touchUpperB3 = high >= upperBand3
+
+// ── ARM ──
+if touchLowerB3 and not longArmed and inTimeWindow and strategy.position_size == 0
+    longArmed     := true
+    pendingLongSL := low
+
+if touchUpperB3 and not shortArmed and inTimeWindow and strategy.position_size == 0
+    shortArmed     := true
+    pendingShortSL := high
+
+// ── TRACK extreme while armed, before entry ──
+if longArmed and strategy.position_size == 0
+    pendingLongSL := math.min(pendingLongSL, low)
+
+if shortArmed and strategy.position_size == 0
+    pendingShortSL := math.max(pendingShortSL, high)
+
+// ── CONFIRMATION ──
+longEntry  = longArmed  and close > lowerBand2 and inTimeWindow and strategy.position_size == 0
+shortEntry = shortArmed and close < upperBand2 and inTimeWindow and strategy.position_size == 0
+
+
+// ─────────────────────────────────────────────
+//  SIGNALS — LABELS + SL LINE
+// ─────────────────────────────────────────────
+
+if longEntry
+    activeLongSL := pendingLongSL
+    slLine := line.new(x1= bar_index,y1 = activeLongSL,x2= bar_index+1, y2 = activeLongSL,color  = color.new(color.red, 0),width  = 2,style  = line.style_dashed,extend = extend.right)
+    label.new(bar_index, low - ta.atr(14),text  = "▲ BUY\nSL: " + str.tostring(math.round(activeLongSL, 2)) + "\nTP: VWAP",color = color.new(color.green, 10), textcolor = color.white,style = label.style_label_up, size = size.small)
+    longArmed     := false
+    pendingLongSL := na
+
+if shortEntry
+    activeShortSL := pendingShortSL
+    slLine := line.new(x1= bar_index,y1 = activeShortSL,x2= bar_index+1, y2 = activeShortSL,color  = color.new(color.red, 0),width  = 1,style  = line.style_solid,extend = extend.right)
+    label.new(bar_index, high + ta.atr(14), text  = "▼ SELL\nSL: " + str.tostring(math.round(activeShortSL, 2)) + "\nTP: VWAP", color = color.new(color.red, 10), textcolor = color.white, style = label.style_label_down, size = size.small)
+    shortArmed     := false
+    pendingShortSL := na
+
+// ── Cap SL line when trade closes ──
+wasInTrade = strategy.position_size[1] != 0
+justClosed = wasInTrade and strategy.position_size == 0
+
+if justClosed and not na(slLine)
+    line.set_extend(slLine, extend.none)
+    line.set_x2(slLine, bar_index)
+
+
+// ─────────────────────────────────────────────
+//  STRATEGY ORDERS
+// ─────────────────────────────────────────────
+
+if not disableTrades
+
+    // ── Entries ──
+    if longEntry
+        strategy.entry("Long", strategy.long)
+
+    if shortEntry
+        strategy.entry("Short", strategy.short)
+
+    if strategy.position_size > 0
+        strategy.exit("Exit Long", "Long", stop=activeLongSL, limit=vwapVal)
+        
+    if strategy.position_size < 0
+        strategy.exit("Exit Short", "Short", stop=activeShortSL, limit=vwapVal)
+
+    if strategy.position_size == 0 and not longEntry and not shortEntry
+        activeLongSL  := na
+        activeShortSL := na
+
+
+// ─────────────────────────────────────────────
+//  DISARM CONDITIONS
+// ─────────────────────────────────────────────
+
+if isNewAnchor
+    longArmed      := false
+    shortArmed     := false
+    pendingLongSL  := na
+    pendingShortSL := na
+
+windowJustClosed = useTimeFilter and not inTimeWindow and inTimeWindow[1]
+if windowJustClosed
+    longArmed      := false
+    shortArmed     := false
+    pendingLongSL  := na
+    pendingShortSL := na
