@@ -1,0 +1,283 @@
+//@version=6
+indicator("[MR.CapitalFX] Institutional Data Engine — PHASE 0", shorttitle = "Institutional Engine P0", overlay = true, max_labels_count = 50, dynamic_requests = true)
+
+// ============================================================================
+// PHASE 0
+// DATA FOUNDATION & VALIDATION
+//
+// PURPOSE:
+// 1. Validate chart information.
+// 2. Validate chart volume.
+// 3. Validate VIX / VXN / VVIX external contexts.
+// 4. Validate the user-selected Open Interest service symbol.
+// 5. Display diagnostic information only.
+//
+// NO:
+// - Volume Profile
+// - HVN/LVN
+// - POC
+// - Delta
+// - OI trends
+// - Volatility regimes
+// - Signals
+// - Alerts
+//
+// Those belong to later phases.
+// ============================================================================
+
+// ============================================================================
+// 01. INPUTS
+// ============================================================================
+
+string GROUP_DATA = "01 — External Data"
+string GROUP_DISPLAY = "02 — Diagnostics"
+
+vixSymbol = input.symbol("CBOE:VIX", "VIX Symbol", group = GROUP_DATA)
+vxnSymbol = input.symbol("CBOE:VXN", "VXN Symbol", group = GROUP_DATA)
+vvixSymbol = input.symbol("CBOE:VVIX", "VVIX Symbol", group = GROUP_DATA)
+
+// IMPORTANT:
+// Leave blank until we identify the REAL TradingView OI service symbol.
+// Do NOT type a guessed symbol.
+oiSymbol = input.symbol("", "Open Interest Symbol", group = GROUP_DATA)
+oiTimeframe = input.timeframe("1D", "OI Probe Timeframe", group = GROUP_DATA)
+
+showDiagnostics = input.bool(true, "Show Diagnostics Table", group = GROUP_DISPLAY)
+showDebugLabel = input.bool(false, "Show Debug Label", group = GROUP_DISPLAY)
+
+// ============================================================================
+// 02. CHART INFORMATION
+// ============================================================================
+
+string chartSymbol = syminfo.tickerid
+string chartType = syminfo.type
+string exchangeTimezone = syminfo.timezone
+string chartTimeframe = timeframe.period
+string chartSession = syminfo.session
+
+float chartClose = close
+float chartVolume = volume
+
+// Volume availability check.
+// Five bars are used so a single missing realtime value does not immediately
+// classify the entire dataset as unavailable.
+bool volumeAvailable = not na(ta.sma(volume, 5))
+
+// ============================================================================
+// 03. EXTERNAL DATA CONFIGURATION STATE
+// ============================================================================
+
+bool oiConfigured = str.length(oiSymbol) > 0
+
+// ============================================================================
+// 04. EXTERNAL DATA REQUESTS
+// ============================================================================
+//
+// Phase 0 intentionally requests very little data.
+//
+// VIX / VXN / VVIX:
+//     Same timeframe as the chart.
+//
+// OI:
+//     User-configurable timeframe, default = Daily.
+//
+// ignore_invalid_symbol = true means an unavailable symbol returns `na`
+// instead of terminating the entire script.
+// ============================================================================
+
+float vixValue = request.security(vixSymbol, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, calc_bars_count = 5)
+float vxnValue = request.security(vxnSymbol, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, calc_bars_count = 5)
+float vvixValue = request.security(vvixSymbol, timeframe.period, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, calc_bars_count = 5)
+
+// OI request only occurs when the user has selected an OI symbol.
+float oiValue = oiConfigured ? request.security(oiSymbol, oiTimeframe, close, gaps = barmerge.gaps_off, lookahead = barmerge.lookahead_off, ignore_invalid_symbol = true, calc_bars_count = 5) : na
+
+// ============================================================================
+// 05. DATA AVAILABILITY STATES
+// ============================================================================
+
+bool vixAvailable = not na(vixValue)
+bool vxnAvailable = not na(vxnValue)
+bool vvixAvailable = not na(vvixValue)
+bool oiAvailable = oiConfigured and not na(oiValue)
+
+// ============================================================================
+// 06. HELPER FUNCTIONS
+// ============================================================================
+
+// Returns a human-readable state.
+stateText(bool configured, bool available) => not configured ? "NOT CONFIGURED" : available ? "AVAILABLE" : "UNAVAILABLE"
+
+// Diagnostic table color.
+stateColor(bool configured, bool available) => not configured ? color.orange : available ? color.lime : color.red
+
+// Formats numeric values for diagnostics.
+valueText(float value) => na(value) ? "N/A" : str.tostring(value, format.mintick)
+
+// ============================================================================
+// 07. DIAGNOSTIC TABLE
+// ============================================================================
+
+var table diagnostics = table.new(position.top_right, 4, 15, bgcolor = color.new(color.black, 10), frame_color = color.gray, frame_width = 1, border_color = color.gray, border_width = 1)
+
+if barstate.islast and showDiagnostics
+
+    // ------------------------------------------------------------------------
+    // HEADER
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 0, "PHASE 0", text_color = color.white, bgcolor = color.new(color.blue, 20), text_size = size.normal)
+    table.cell(diagnostics, 1, 0, "DATA", text_color = color.white, bgcolor = color.new(color.blue, 20), text_size = size.normal)
+    table.cell(diagnostics, 2, 0, "STATUS", text_color = color.white, bgcolor = color.new(color.blue, 20), text_size = size.normal)
+    table.cell(diagnostics, 3, 0, "VALUE", text_color = color.white, bgcolor = color.new(color.blue, 20), text_size = size.normal)
+
+    // ------------------------------------------------------------------------
+    // CHART SYMBOL
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 1, "CHART", text_color = color.white)
+    table.cell(diagnostics, 1, 1, "Symbol", text_color = color.white)
+    table.cell(diagnostics, 2, 1, "AVAILABLE", text_color = color.lime)
+    table.cell(diagnostics, 3, 1, chartSymbol, text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // CHART TYPE
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 2, "CHART", text_color = color.white)
+    table.cell(diagnostics, 1, 2, "Type", text_color = color.white)
+    table.cell(diagnostics, 2, 2, "AVAILABLE", text_color = color.lime)
+    table.cell(diagnostics, 3, 2, chartType, text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // TIMEFRAME
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 3, "CHART", text_color = color.white)
+    table.cell(diagnostics, 1, 3, "Timeframe", text_color = color.white)
+    table.cell(diagnostics, 2, 3, "AVAILABLE", text_color = color.lime)
+    table.cell(diagnostics, 3, 3, chartTimeframe, text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // EXCHANGE TIMEZONE
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 4, "CHART", text_color = color.white)
+    table.cell(diagnostics, 1, 4, "Exchange TZ", text_color = color.white)
+    table.cell(diagnostics, 2, 4, "AVAILABLE", text_color = color.lime)
+    table.cell(diagnostics, 3, 4, exchangeTimezone, text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // SESSION
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 5, "CHART", text_color = color.white)
+    table.cell(diagnostics, 1, 5, "Session", text_color = color.white)
+    table.cell(diagnostics, 2, 5, "AVAILABLE", text_color = color.lime)
+    table.cell(diagnostics, 3, 5, chartSession, text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // VOLUME
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 6, "CORE", text_color = color.white)
+    table.cell(diagnostics, 1, 6, "Volume", text_color = color.white)
+    table.cell(diagnostics, 2, 6, stateText(true, volumeAvailable), text_color = stateColor(true, volumeAvailable))
+    table.cell(diagnostics, 3, 6, valueText(chartVolume), text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // VIX
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 7, "VOL", text_color = color.white)
+    table.cell(diagnostics, 1, 7, vixSymbol, text_color = color.white)
+    table.cell(diagnostics, 2, 7, stateText(true, vixAvailable), text_color = stateColor(true, vixAvailable))
+    table.cell(diagnostics, 3, 7, valueText(vixValue), text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // VXN
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 8, "VOL", text_color = color.white)
+    table.cell(diagnostics, 1, 8, vxnSymbol, text_color = color.white)
+    table.cell(diagnostics, 2, 8, stateText(true, vxnAvailable), text_color = stateColor(true, vxnAvailable))
+    table.cell(diagnostics, 3, 8, valueText(vxnValue), text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // VVIX
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 9, "VOL", text_color = color.white)
+    table.cell(diagnostics, 1, 9, vvixSymbol, text_color = color.white)
+    table.cell(diagnostics, 2, 9, stateText(true, vvixAvailable), text_color = stateColor(true, vvixAvailable))
+    table.cell(diagnostics, 3, 9, valueText(vvixValue), text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // OPEN INTEREST
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 10, "OI", text_color = color.white)
+    table.cell(diagnostics, 1, 10, oiConfigured ? oiSymbol : "Symbol not selected", text_color = color.white)
+    table.cell(diagnostics, 2, 10, stateText(oiConfigured, oiAvailable), text_color = stateColor(oiConfigured, oiAvailable))
+    table.cell(diagnostics, 3, 10, oiAvailable ? valueText(oiValue) : "N/A", text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // OI TIMEFRAME
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 11, "OI", text_color = color.white)
+    table.cell(diagnostics, 1, 11, "Probe Timeframe", text_color = color.white)
+    table.cell(diagnostics, 2, 11, oiConfigured ? "CONFIGURED" : "WAITING", text_color = oiConfigured ? color.lime : color.orange)
+    table.cell(diagnostics, 3, 11, oiTimeframe, text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // CURRENT PRICE
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 12, "CORE", text_color = color.white)
+    table.cell(diagnostics, 1, 12, "Price", text_color = color.white)
+    table.cell(diagnostics, 2, 12, "AVAILABLE", text_color = color.lime)
+    table.cell(diagnostics, 3, 12, valueText(chartClose), text_color = color.white)
+
+    // ------------------------------------------------------------------------
+    // PHASE STATUS
+    // ------------------------------------------------------------------------
+
+    bool phase0Pass = volumeAvailable and vixAvailable and vxnAvailable and vvixAvailable and oiAvailable
+
+    table.cell(diagnostics, 0, 13, "PHASE 0", text_color = color.white, bgcolor = phase0Pass ? color.new(color.green, 65) : color.new(color.orange, 65))
+    table.cell(diagnostics, 1, 13, "Overall", text_color = color.white, bgcolor = phase0Pass ? color.new(color.green, 65) : color.new(color.orange, 65))
+    table.cell(diagnostics, 2, 13, phase0Pass ? "PASS" : "NOT READY", text_color = phase0Pass ? color.lime : color.orange, bgcolor = phase0Pass ? color.new(color.green, 65) : color.new(color.orange, 65))
+    table.cell(diagnostics, 3, 13, phase0Pass ? "All probes available" : "Fix missing data", text_color = color.white, bgcolor = phase0Pass ? color.new(color.green, 65) : color.new(color.orange, 65))
+
+    // ------------------------------------------------------------------------
+    // IMPORTANT NOTE
+    // ------------------------------------------------------------------------
+
+    table.cell(diagnostics, 0, 14, "NOTE", text_color = color.white, bgcolor = color.new(color.gray, 70))
+    table.cell(diagnostics, 1, 14, "Diagnostic only", text_color = color.white, bgcolor = color.new(color.gray, 70))
+    table.cell(diagnostics, 2, 14, "No signals", text_color = color.white, bgcolor = color.new(color.gray, 70))
+    table.cell(diagnostics, 3, 14, "Phase 1 not started", text_color = color.white, bgcolor = color.new(color.gray, 70))
+
+// ============================================================================
+// 08. OPTIONAL DEBUG LABEL
+// ============================================================================
+
+if barstate.islast and showDebugLabel
+
+    string debugText = "PHASE 0 DEBUG\n" + "Chart      : " + chartSymbol + "\n" + "Type       : " + chartType + "\n" + "TF         : " + chartTimeframe + "\n" + "Timezone   : " + exchangeTimezone + "\n" + "Volume     : " + stateText(true, volumeAvailable) + "\n" + "VIX        : " + stateText(true, vixAvailable) + "\n" + "VXN        : " + stateText(true, vxnAvailable) + "\n" + "VVIX       : " + stateText(true, vvixAvailable) + "\n" + "OI         : " + stateText(oiConfigured, oiAvailable)
+
+    label.new(bar_index, high, debugText, style = label.style_label_down, textcolor = color.white, color = color.new(color.black, 10), size = size.small)
+
+// ============================================================================
+// 09. DATA WINDOW PROBES
+// ============================================================================
+//
+// These are only diagnostics.
+// We will expand Data Window outputs in a later phase.
+//
+
+plot(vixAvailable ? vixValue : na, title = "PHASE 0 — VIX Probe", display = display.data_window)
+plot(vxnAvailable ? vxnValue : na, title = "PHASE 0 — VXN Probe", display = display.data_window)
+plot(vvixAvailable ? vvixValue : na, title = "PHASE 0 — VVIX Probe", display = display.data_window)
+plot(oiAvailable ? oiValue : na, title = "PHASE 0 — OI Probe", display = display.data_window)
